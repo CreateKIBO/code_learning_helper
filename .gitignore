@@ -1,0 +1,34 @@
+# ===== 构建产物 =====
+build/
+out/
+*.class
+
+# ===== Gradle =====
+.gradle/
+gradle-app.setting
+!gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+!gradlew
+!gradlew.bat
+
+# ===== IntelliJ Platform Gradle Plugin 缓存（可几个 GB，绝不提交）=====
+.intellijPlatform/
+
+# ===== IDE 配置（个人偏好，不进仓库）=====
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# ===== 工具会话目录 =====
+.zcode/
+
+# ===== 日志 / 临时文件 =====
+*.log
+*.tmp
+*.bak
+
+# ===== 操作系统杂物 =====
+.DS_Store
+Thumbs.db
+desktop.ini

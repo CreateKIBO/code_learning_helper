@@ -1,0 +1,44 @@
+<idea-plugin>
+    <!-- ============ 插件元信息 ============ -->
+    <id>com.codementor</id>
+    <name>CodeMentor</name>
+    <vendor email="local@codementor" url="https://example.com">CodeMentor Personal</vendor>
+
+    <!-- ============ 兼容的 IDE 范围 ============ -->
+    <!-- 仅支持 IDEA 2024.1.x（241.*）。具体值由 Gradle 构建时注入，这里留空占位。 -->
+    <!-- idea-version 标签由 IntelliJ Platform Gradle Plugin 2.x 自动生成，不要手填 sinceBuild/untilBuild。 -->
+
+    <!-- ============ 描述 ============ -->
+    <description><![CDATA[
+        <h3>CodeMentor 个人版</h3>
+        <p>住在 IntelliJ IDEA 里的 Java 学习教练。</p>
+        <p>选中代码或把光标放在方法内，按 Alt+M，导师给出带教学讲解的建议。</p>
+    ]]></description>
+
+    <!-- ============ 依赖的内置插件 ============ -->
+    <!-- Java PSI 能力（PsiMethod / PsiClass）来自 com.intellij.java -->
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.java</depends>
+
+    <!-- ============ 扩展点注册 ============ -->
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- 教练侧栏 Tool Window -->
+        <toolWindow id="CodeMentor"
+                    anchor="right"
+                    icon="AllIcons.Toolwindows.ToolWindowProject"
+                    factoryClass="com.codementor.ui.MentorToolWindowFactory"/>
+    </extensions>
+
+    <!-- ============ 动作注册 ============ -->
+    <actions>
+        <action id="CodeMentor.ReviewCurrent"
+                class="com.codementor.action.ReviewAction"
+                text="请导师评审(_M)"
+                description="评审选中的代码或当前方法">
+            <!-- 快捷键 Alt+M（带下划线 Mnemonic） -->
+            <keyboard-shortcut keymap="$default" first-keystroke="alt M"/>
+            <!-- 右键编辑器菜单入口 -->
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
