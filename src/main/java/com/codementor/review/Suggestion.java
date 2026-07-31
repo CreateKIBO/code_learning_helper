@@ -1,12 +1,9 @@
 package com.codementor.review;
 
-import java.util.List;
-
 /**
  * 一条导师建议 —— 对应 AI 输出协议中的单个 suggestion（最终方案第 9 节）。
  *
- * <p>阶段 0 暂不接入真实模型，这个类先定义好结构，后续接入模型时直接复用。
- * 三层渐进式展示（提示在前、答案在后）：
+ * <p>侧栏按三层渐进式展示（提示在前、答案在后）：
  * <ol>
  *   <li>{@link #hint} —— 只指方向，不立即给答案。</li>
  *   <li>{@link #explanation} —— 完整讲解（默认折叠，用户点开才看）。</li>
@@ -40,10 +37,17 @@ public final class Suggestion {
     private final String explanation;  // 第二层：完整讲解（默认折叠）
     private final String example;      // 第三层：参考代码（可选，进一步折叠）
     private final String knowledgePoint; // 知识点标签，用于学习记录
+    private final String verificationCriteria; // 修改验证时用于判断问题是否解决
 
-    public Suggestion(String id, Category category, Certainty certainty,
-                      String title, String evidence, String hint,
-                      String explanation, String example, String knowledgePoint) {
+    /**
+     * 私有构造器：统一走 {@link Builder}。
+     * 9 个参数里 7 个是 String，公开构造器等于给"传错顺序"留门；
+     * 私有后 Builder 是唯一构造入口（嵌套类不受 private 限制）。
+     */
+    private Suggestion(String id, Category category, Certainty certainty,
+                       String title, String evidence, String hint,
+                       String explanation, String example, String knowledgePoint,
+                       String verificationCriteria) {
         this.id = id;
         this.category = category;
         this.certainty = certainty;
@@ -53,6 +57,7 @@ public final class Suggestion {
         this.explanation = explanation;
         this.example = example;
         this.knowledgePoint = knowledgePoint;
+        this.verificationCriteria = verificationCriteria;
     }
 
     public String getId() { return id; }
@@ -64,9 +69,61 @@ public final class Suggestion {
     public String getExplanation() { return explanation; }
     public String getExample() { return example; }
     public String getKnowledgePoint() { return knowledgePoint; }
+    public String getVerificationCriteria() { return verificationCriteria; }
 
     @Override
     public String toString() {
         return "[" + category.getLabel() + "/" + certainty + "] " + title;
+    }
+
+    /**
+     * Builder —— 用于模型 JSON 解析和测试桩构造 Suggestion。
+     *
+     * <p>为什么需要 Builder：9 参构造器全是 String，模型解析时极易把
+     * evidence 和 hint 之类相邻参数填反，编译期查不出来。
+     * Builder 让每个字段都有名字，传错一目了然。
+     *
+     * <p>必填项：category、certainty、title。其余有合理默认值（空串），
+     * 调用方按需链式补充。build() 时做最小校验。
+     */
+    public static final class Builder {
+        private String id = "";
+        private Category category;
+        private Certainty certainty;
+        private String title;
+        private String evidence = "";
+        private String hint = "";
+        private String explanation = "";
+        private String example = "";
+        private String knowledgePoint = "";
+        private String verificationCriteria = "";
+
+        public Builder id(String id) { this.id = id; return this; }
+        public Builder category(Category category) { this.category = category; return this; }
+        public Builder certainty(Certainty certainty) { this.certainty = certainty; return this; }
+        public Builder title(String title) { this.title = title; return this; }
+        public Builder evidence(String evidence) { this.evidence = evidence; return this; }
+        public Builder hint(String hint) { this.hint = hint; return this; }
+        public Builder explanation(String explanation) { this.explanation = explanation; return this; }
+        public Builder example(String example) { this.example = example; return this; }
+        public Builder knowledgePoint(String knowledgePoint) { this.knowledgePoint = knowledgePoint; return this; }
+        public Builder verificationCriteria(String verificationCriteria) {
+            this.verificationCriteria = verificationCriteria;
+            return this;
+        }
+
+        public Suggestion build() {
+            if (category == null) {
+                throw new IllegalStateException("Suggestion 必须有 category");
+            }
+            if (certainty == null) {
+                throw new IllegalStateException("Suggestion 必须有 certainty");
+            }
+            if (title == null || title.isBlank()) {
+                throw new IllegalStateException("Suggestion 必须有 title");
+            }
+            return new Suggestion(id, category, certainty, title,
+                    evidence, hint, explanation, example, knowledgePoint, verificationCriteria);
+        }
     }
 }

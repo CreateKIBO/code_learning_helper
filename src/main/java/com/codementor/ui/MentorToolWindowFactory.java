@@ -12,7 +12,7 @@ import org.jetbrains.annotations.NotNull;
  * 教练侧栏工厂 —— 由 plugin.xml 的 toolWindow 扩展点注册创建。
  *
  * <p>实现 {@link DumbAware}：即使在"建立索引中"（Dumb Mode）也能打开侧栏，
- * 阶段 0 不依赖索引就绪就能用。
+ * 工厂本身不依赖索引就绪；具体 PSI 读取由后台 ReadAction 完成。
  */
 public class MentorToolWindowFactory implements ToolWindowFactory, DumbAware {
 
@@ -23,6 +23,8 @@ public class MentorToolWindowFactory implements ToolWindowFactory, DumbAware {
     public void createToolWindowContent(@NotNull Project project, @NotNull ToolWindow toolWindow) {
         MentorToolWindowPanel panel = new MentorToolWindowPanel(project);
         Content content = ContentFactory.getInstance().createContent(panel, "", false);
+        // 内容销毁（如项目关闭）时触发 panel.dispose()，退订会话监听，防止泄漏
+        content.setDisposer(panel);
         toolWindow.getContentManager().addContent(content);
     }
 }

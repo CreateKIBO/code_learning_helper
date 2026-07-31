@@ -2,7 +2,7 @@
     <!-- ============ 插件元信息 ============ -->
     <id>com.codementor</id>
     <name>CodeMentor</name>
-    <vendor email="local@codementor" url="https://example.com">CodeMentor Personal</vendor>
+    <vendor email="local@codementor">CodeMentor Personal</vendor>
 
     <!-- ============ 兼容的 IDE 范围 ============ -->
     <!-- 仅支持 IDEA 2024.1.x（241.*）。具体值由 Gradle 构建时注入，这里留空占位。 -->
@@ -10,9 +10,11 @@
 
     <!-- ============ 描述 ============ -->
     <description><![CDATA[
+        CodeMentor is a private Java and JavaWeb learning coach for IntelliJ IDEA.
         <h3>CodeMentor 个人版</h3>
         <p>住在 IntelliJ IDEA 里的 Java 学习教练。</p>
-        <p>选中代码或把光标放在方法内，按 Alt+M，导师给出带教学讲解的建议。</p>
+        <p>选中代码或把光标放在方法内：Alt+M 评审写法，Alt+Shift+M 解释代码。</p>
+        <p>支持 JavaWeb 分层识别、修改验证、发送前隐私预览、本地学习统计与薄弱知识点小练习。</p>
     ]]></description>
 
     <!-- ============ 依赖的内置插件 ============ -->
@@ -27,6 +29,15 @@
                     anchor="right"
                     icon="AllIcons.Toolwindows.ToolWindowProject"
                     factoryClass="com.codementor.ui.MentorToolWindowFactory"/>
+
+        <!-- 设置页：IDE Settings → Tools → CodeMentor -->
+        <applicationConfigurable parentId="tools"
+                                 id="com.codementor.settings.CodeMentorConfigurable"
+                                 displayName="CodeMentor"
+                                 instance="com.codementor.settings.CodeMentorConfigurable"/>
+
+        <!-- 跟踪最后真实编辑位置，供保存触发精确定位被修改的方法。 -->
+        <editorFactoryListener implementation="com.codementor.action.LastEditTracker"/>
     </extensions>
 
     <!-- ============ 动作注册 ============ -->
@@ -40,5 +51,17 @@
             <!-- 右键编辑器菜单入口 -->
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>
+        <action id="CodeMentor.ExplainCurrent"
+                class="com.codementor.action.ExplainAction"
+                text="请导师解释(_E)"
+                description="解释选中的代码或当前方法">
+            <keyboard-shortcut keymap="$default" first-keystroke="alt shift M"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
     </actions>
+
+    <applicationListeners>
+        <listener class="com.codementor.action.SaveReviewListener"
+                  topic="com.intellij.openapi.fileEditor.FileDocumentManagerListener"/>
+    </applicationListeners>
 </idea-plugin>

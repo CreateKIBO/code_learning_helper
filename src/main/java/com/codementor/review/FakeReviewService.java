@@ -1,12 +1,14 @@
 package com.codementor.review;
 
-import java.util.ArrayList;
+import com.codementor.practice.Exercise;
+import com.codementor.practice.ExerciseRequest;
+
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * 假评审服务 —— 阶段 0 用，返回硬编码的教学建议。
+ * 假评审服务 —— 本地演示和自动测试用，返回硬编码的教学建议。
  *
  * <p>为什么要先做假的（方案第 16 节第 6、7 步）：
  * <ul>
@@ -19,7 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 然后返回固定的 JavaWeb 教学建议（对应你选择的默认教学级别）。
  *
  * <p>失败演示：每 5 次请求随机失败 1 次（约 20%），用真实模型常见错误原因模拟，
- * 让用户在阶段 0 就能验证 FAILED 状态的 UI 表现。接真模型后这个机制仍可保留作降级测试。
+ * 用于验证 FAILED 状态的 UI 表现，不会消耗真实模型额度。
  */
 public class FakeReviewService implements ReviewService {
 
@@ -27,7 +29,7 @@ public class FakeReviewService implements ReviewService {
     private final AtomicInteger counter = new AtomicInteger(0);
 
     @Override
-    public void review(ReviewContext context, String requestId, Callback callback) {
+    public CancellableRequest review(ReviewContext context, String requestId, Callback callback) {
         int seq = counter.incrementAndGet();
         // 用守护线程模拟异步网络调用，绝不阻塞调用方（EDT）
         Thread worker = new Thread(() -> {
@@ -44,13 +46,84 @@ public class FakeReviewService implements ReviewService {
                     callback.onFailure(simulatedFailure());
                     return;
                 }
-                callback.onSuccess(buildFakeSuggestions(context));
+                callback.onSuccess(context.getReviewMode() == ReviewMode.EXPLAIN
+                        ? buildFakeExplanations(context)
+                        : buildFakeSuggestions(context));
             } catch (Exception e) {
                 callback.onFailure("假服务内部错误: " + e.getMessage());
             }
         }, "CodeMentor-FakeReview-" + requestId);
         worker.setDaemon(true);
         worker.start();
+        return CancellableRequest.forThread(worker);
+    }
+
+    @Override
+    public CancellableRequest verify(VerificationRequest request, String requestId,
+                                     VerificationCallback callback) {
+        Thread worker = new Thread(() -> {
+            try {
+                TimeUnit.MILLISECONDS.sleep(500);
+                boolean changed = !request.getOriginalContext().getFingerprint()
+                        .equals(request.getCurrentContext().getFingerprint());
+                if (!changed) {
+                    callback.onFailure("代码尚未修改，请先尝试按提示调整代码。");
+                    return;
+                }
+                callback.onSuccess(new VerificationResult(
+                        VerificationStatus.RESOLVED,
+                        "假服务检测到代码指纹已经变化。",
+                        "接入真实模型后会根据原建议的验证标准判断。"));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                callback.onFailure("假验证服务内部错误：" + e.getMessage());
+            }
+        }, "CodeMentor-FakeVerify-" + requestId);
+        worker.setDaemon(true);
+        worker.start();
+        return CancellableRequest.forThread(worker);
+    }
+
+    @Override
+    public CancellableRequest followUp(
+            FollowUpRequest request, String requestId, FollowUpCallback callback) {
+        Thread worker = new Thread(() -> {
+            try {
+                TimeUnit.MILLISECONDS.sleep(400);
+                callback.onSuccess(
+                        "这是关于“" + request.getSuggestion().getTitle()
+                                + "”的假追问回答。接入真实模型时会结合当前建议和代码上下文回答。");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "CodeMentor-FakeFollowUp-" + requestId);
+        worker.setDaemon(true);
+        worker.start();
+        return CancellableRequest.forThread(worker);
+    }
+
+    @Override
+    public CancellableRequest generateExercise(
+            ExerciseRequest request, String requestId, ExerciseCallback callback) {
+        Thread worker = new Thread(() -> {
+            try {
+                TimeUnit.MILLISECONDS.sleep(450);
+                callback.onSuccess(new Exercise(
+                        "练习：" + request.getKnowledgePoint(),
+                        request.getKnowledgePoint(),
+                        "补全下面的方法，让它在输入不合法时给出清晰结果，并写出你选择这种处理方式的理由。",
+                        "public Result handle(Input input) {\n    // TODO: 由你完成\n}",
+                        List.of("只修改这个方法和必要的数据约束", "不要引入新的框架"),
+                        List.of("先明确什么输入属于不合法", "再考虑校验发生在哪一层"),
+                        List.of("正常输入可得到预期结果", "非法输入有明确且一致的处理")));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }, "CodeMentor-FakeExercise-" + requestId);
+        worker.setDaemon(true);
+        worker.start();
+        return CancellableRequest.forThread(worker);
     }
 
     /** 模拟真实模型常见的失败原因，让 FAILED 状态有真实感。 */
@@ -65,64 +138,96 @@ public class FakeReviewService implements ReviewService {
     }
 
     /**
-     * 构造硬编码建议。用 JavaWeb 场景（你选的默认级别），
-     * 让阶段 0 就能看到贴近真实使用场景的卡片样式。
+     * 构造硬编码 JavaWeb 建议，让离线演示也能看到完整卡片。
      */
     private List<Suggestion> buildFakeSuggestions(ReviewContext context) {
-        List<Suggestion> list = new ArrayList<>();
+        // 用 Builder 构造：每个字段都有名字，比 9 参构造器易读、不易传错。
+        // 与模型 JSON 解析复用同一个 Builder 数据结构。
+        return List.of(
+                new Suggestion.Builder()
+                        .id("S1")
+                        .category(Suggestion.Category.JAVAWEB)
+                        .certainty(Suggestion.Certainty.MEDIUM)
+                        .title("Controller 方法缺少参数校验")
+                        .evidence("评审的代码是: " + context.getTargetName())
+                        .hint("有没有办法在进入方法体之前，就保证参数不为空、长度合法？")
+                        .explanation("可以用 Jakarta Validation（@Valid + @NotBlank 等）在 Controller 层声明约束，"
+                                + "配合全局异常处理器统一返回校验失败信息，避免每个方法手写 if 判空。")
+                        .example("@PostMapping(\"/login\")\n"
+                                + "public Result login(@Valid @RequestBody LoginDTO dto) { ... }\n\n"
+                                + "// LoginDTO 内部：\n"
+                                + "@NotBlank(message = \"用户名不能为空\")\n"
+                                + "private String username;")
+                        .knowledgePoint("Bean Validation 参数校验")
+                        .verificationCriteria("外部输入在进入业务逻辑前具有明确的校验约束")
+                        .build(),
 
-        list.add(new Suggestion(
-                "S1",
-                Suggestion.Category.JAVAWEB,
-                Suggestion.Certainty.MEDIUM,
-                "Controller 方法缺少参数校验",
-                "评审的代码是: " + context.getTargetName(),
-                "有没有办法在进入方法体之前，就保证参数不为空、长度合法？",
-                "可以用 Jakarta Validation（@Valid + @NotBlank 等）在 Controller 层声明约束，"
-                        + "配合全局异常处理器统一返回校验失败信息，避免每个方法手写 if 判空。",
-                "@PostMapping(\"/login\")\n"
-                        + "public Result login(@Valid @RequestBody LoginDTO dto) { ... }\n\n"
-                        + "// LoginDTO 内部：\n"
-                        + "@NotBlank(message = \"用户名不能为空\")\n"
-                        + "private String username;",
-                "Bean Validation 参数校验"
-        ));
+                new Suggestion.Builder()
+                        .id("S2")
+                        .category(Suggestion.Category.DESIGN)
+                        .certainty(Suggestion.Certainty.MEDIUM)
+                        .title("返回值建议用统一响应体")
+                        .evidence("评审的代码是: " + context.getTargetName())
+                        .hint("如果前端要统一处理成功/失败，这个方法的返回结构是否一致？")
+                        .explanation("企业项目通常约定一个统一的响应体（如 Result<T>），包含 code/message/data，"
+                                + "配合全局异常处理器，让所有接口返回结构一致，便于前端统一拦截。")
+                        .example("public class Result<T> {\n"
+                                + "    private int code;\n"
+                                + "    private String message;\n"
+                                + "    private T data;\n"
+                                + "    // 成功/失败的静态工厂方法省略\n"
+                                + "}")
+                        .knowledgePoint("统一响应体设计")
+                        .verificationCriteria("返回结构与当前项目既有 API 契约保持一致")
+                        .build(),
 
-        list.add(new Suggestion(
-                "S2",
-                Suggestion.Category.DESIGN,
-                Suggestion.Certainty.MEDIUM,
-                "返回值建议用统一响应体",
-                "评审的代码是: " + context.getTargetName(),
-                "如果前端要统一处理成功/失败，这个方法的返回结构是否一致？",
-                "企业项目通常约定一个统一的响应体（如 Result<T>），包含 code/message/data，"
-                        + "配合全局异常处理器，让所有接口返回结构一致，便于前端统一拦截。",
-                "public class Result<T> {\n"
-                        + "    private int code;\n"
-                        + "    private String message;\n"
-                        + "    private T data;\n"
-                        + "    // 成功/失败的静态工厂方法省略\n"
-                        + "}",
-                "统一响应体设计"
-        ));
-
-        list.add(new Suggestion(
-                "S3",
-                Suggestion.Category.READABILITY,
-                Suggestion.Certainty.LOW,
-                "方法可能承担了过多职责",
-                "评审的代码是: " + context.getTargetName(),
-                "这个方法是不是同时做了：参数处理、业务逻辑、数据库访问、结果组装？",
-                "如果一个方法超过几十行且混合多种关注点，可考虑拆分。"
-                        + "注意这是设计取舍，不是绝对错误——按项目阶段和复杂度判断。",
-                "// 例如把数据库访问抽到 Repository/Mapper 层：\n"
-                        + "// Controller 只做参数接收与响应组装，\n"
-                        + "// Service 负责业务编排，Repository 负责持久化。",
-                "单一职责与分层"
-        ));
-
-        // 方案约束：每次最多 3 条。这里固定构造 3 条（S1/S2/S3），故直接返回。
+                new Suggestion.Builder()
+                        .id("S3")
+                        .category(Suggestion.Category.READABILITY)
+                        .certainty(Suggestion.Certainty.LOW)
+                        .title("方法可能承担了过多职责")
+                        .evidence("评审的代码是: " + context.getTargetName())
+                        .hint("这个方法是不是同时做了：参数处理、业务逻辑、数据库访问、结果组装？")
+                        .explanation("如果一个方法超过几十行且混合多种关注点，可考虑拆分。"
+                                + "注意这是设计取舍，不是绝对错误——按项目阶段和复杂度判断。")
+                        .example("// 例如把数据库访问抽到 Repository/Mapper 层：\n"
+                                + "// Controller 只做参数接收与响应组装，\n"
+                                + "// Service 负责业务编排，Repository 负责持久化。")
+                        .knowledgePoint("单一职责与分层")
+                        .verificationCriteria("方法中的职责边界比修改前更清晰，且没有引入无意义抽象")
+                        .build()
+        );
+        // 方案约束：每次最多 3 条。这里固定构造 3 条（S1/S2/S3）。
         // 接真实模型后，截断逻辑会移到 JSON 解析层统一处理。
-        return list;
+    }
+
+    private List<Suggestion> buildFakeExplanations(ReviewContext context) {
+        return List.of(
+                new Suggestion.Builder()
+                        .id("S1")
+                        .category(Suggestion.Category.JAVA_USAGE)
+                        .certainty(Suggestion.Certainty.MEDIUM)
+                        .title("先看清这个方法的输入、处理和输出")
+                        .evidence("当前解释目标：" + context.getTargetName())
+                        .hint("这个方法接收了什么，最终把什么交给调用方？")
+                        .explanation("可以先沿着参数、关键分支和 return 语句走一遍，"
+                                + "再看它调用的依赖分别承担什么职责。")
+                        .example("// 先用自己的话写三行：输入 → 处理 → 输出")
+                        .knowledgePoint("代码执行流程")
+                        .verificationCriteria("能用自己的话说明方法的主要执行流程")
+                        .build(),
+                new Suggestion.Builder()
+                        .id("S2")
+                        .category(Suggestion.Category.JAVAWEB)
+                        .certainty(Suggestion.Certainty.MEDIUM)
+                        .title("结合当前分层角色理解职责")
+                        .evidence("识别到角色："
+                                + context.getJavaWebContext().getRole().getLabel())
+                        .hint("这段逻辑属于输入适配、业务规则，还是数据访问？")
+                        .explanation(context.getJavaWebContext().getReviewFocus())
+                        .example("// 这是一条理解提示，不要求你立刻重构。")
+                        .knowledgePoint("JavaWeb 分层职责")
+                        .verificationCriteria("能说明当前类型在调用链中的职责")
+                        .build());
     }
 }

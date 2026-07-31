@@ -1,0 +1,182 @@
+[
+  {
+    "id": "java-collections-generics",
+    "filePath": "src/main/java/demo/CollectionLesson.java",
+    "declarationEvidence": "import java.util.List;",
+    "code": "int totalLength(List<String> values) { return values.stream().mapToInt(String::length).sum(); }",
+    "expectedTechnologyTag": "",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-io-try-with-resources",
+    "filePath": "src/main/java/demo/FileLesson.java",
+    "declarationEvidence": "import java.io.InputStream;",
+    "code": "byte[] read(InputStream in) throws IOException { try (in) { return in.readAllBytes(); } }",
+    "expectedTechnologyTag": "Java IO",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-concurrency-future",
+    "filePath": "src/main/java/demo/AsyncLesson.java",
+    "declarationEvidence": "import java.util.concurrent.CompletableFuture;",
+    "code": "CompletableFuture<String> load() { return CompletableFuture.completedFuture(\"ok\"); }",
+    "expectedTechnologyTag": "Java Concurrency",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-concurrency-synchronized",
+    "filePath": "src/main/java/demo/Counter.java",
+    "declarationEvidence": "synchronized volatile",
+    "code": "synchronized int increment() { return ++value; }",
+    "expectedTechnologyTag": "Java Concurrency",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-junit-test",
+    "filePath": "src/test/java/demo/CalculatorTest.java",
+    "declarationEvidence": "import org.junit.jupiter.api.Test;",
+    "code": "@Test void addsNumbers() { assertEquals(4, calculator.add(2, 2)); }",
+    "expectedTechnologyTag": "JUnit",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "spring-mvc-controller",
+    "filePath": "src/main/java/demo/UserController.java",
+    "declarationEvidence": "import org.springframework.web.bind.annotation.RestController; @RestController",
+    "code": "@GetMapping(\"/users/{id}\") UserDto find(@PathVariable long id) { return service.find(id); }",
+    "expectedTechnologyTag": "Spring MVC",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "spring-validation",
+    "filePath": "src/main/java/demo/RegisterController.java",
+    "declarationEvidence": "import jakarta.validation.Valid; import org.springframework.web.bind.annotation.RequestBody;",
+    "code": "void register(@Valid @RequestBody RegisterRequest request) { service.register(request); }",
+    "expectedTechnologyTag": "Bean Validation",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "spring-transaction",
+    "filePath": "src/main/java/demo/TransferService.java",
+    "declarationEvidence": "import org.springframework.transaction.annotation.Transactional; @Transactional",
+    "code": "void transfer(long from, long to, BigDecimal amount) { debit(from, amount); credit(to, amount); }",
+    "expectedTechnologyTag": "Spring Transaction",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "jpa-entity",
+    "filePath": "src/main/java/demo/OrderEntity.java",
+    "declarationEvidence": "import jakarta.persistence.Entity; @Entity",
+    "code": "void changeStatus(Status next) { this.status = next; }",
+    "expectedTechnologyTag": "JPA",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "jpa-repository",
+    "filePath": "src/main/java/demo/OrderRepository.java",
+    "declarationEvidence": "import org.springframework.data.jpa.repository.JpaRepository;",
+    "code": "Optional<OrderEntity> findByNumber(String number);",
+    "expectedTechnologyTag": "JPA",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "mybatis-mapper",
+    "filePath": "src/main/java/demo/UserMapper.java",
+    "declarationEvidence": "import org.apache.ibatis.annotations.Mapper; @Mapper",
+    "code": "UserRow findById(long id);",
+    "expectedTechnologyTag": "MyBatis",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "spring-exception-handler",
+    "filePath": "src/main/java/demo/GlobalExceptionHandler.java",
+    "declarationEvidence": "import org.springframework.web.bind.annotation.RestControllerAdvice;",
+    "code": "@ExceptionHandler(NotFoundException.class) ProblemDetail handle(NotFoundException ex) { return problem(ex); }",
+    "expectedTechnologyTag": "Spring MVC",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-dto-validation",
+    "filePath": "src/main/java/demo/CreateUserRequest.java",
+    "declarationEvidence": "import jakarta.validation.constraints.NotBlank;",
+    "code": "String normalizedName() { return name == null ? \"\" : name.trim(); }",
+    "expectedTechnologyTag": "Bean Validation",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-record",
+    "filePath": "src/main/java/demo/Money.java",
+    "declarationEvidence": "import java.math.BigDecimal;",
+    "code": "Money add(Money other) { return new Money(amount.add(other.amount), currency); }",
+    "expectedTechnologyTag": "",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-streams",
+    "filePath": "src/main/java/demo/ReportService.java",
+    "declarationEvidence": "import java.util.stream.Collectors;",
+    "code": "Map<String, Long> count(List<Item> items) { return items.stream().collect(groupingBy(Item::type, counting())); }",
+    "expectedTechnologyTag": "",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-optional",
+    "filePath": "src/main/java/demo/ProfileService.java",
+    "declarationEvidence": "import java.util.Optional;",
+    "code": "Optional<Profile> find(long id) { return repository.findById(id); }",
+    "expectedTechnologyTag": "",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "java-nio-path",
+    "filePath": "src/main/java/demo/SafeFiles.java",
+    "declarationEvidence": "import java.nio.file.Path; import java.nio.file.Files;",
+    "code": "Path resolve(Path root, String name) { return root.resolve(name).normalize(); }",
+    "expectedTechnologyTag": "Java IO",
+    "shouldExclude": false,
+    "secretLiteral": ""
+  },
+  {
+    "id": "custom-credential-file",
+    "filePath": "src/main/java/demo/ApiCredential.java",
+    "declarationEvidence": "",
+    "code": "String apiKey = \"sk-test-123456\";",
+    "expectedTechnologyTag": "",
+    "shouldExclude": true,
+    "secretLiteral": "sk-test-123456"
+  },
+  {
+    "id": "generated-build-source",
+    "filePath": "build/generated/source/GeneratedDto.java",
+    "declarationEvidence": "",
+    "code": "String value() { return internalValue; }",
+    "expectedTechnologyTag": "",
+    "shouldExclude": true,
+    "secretLiteral": ""
+  },
+  {
+    "id": "certificate-file",
+    "filePath": "config/client.pem",
+    "declarationEvidence": "",
+    "code": "-----BEGIN PRIVATE KEY-----\\nabc123\\n-----END PRIVATE KEY-----",
+    "expectedTechnologyTag": "",
+    "shouldExclude": true,
+    "secretLiteral": "abc123"
+  }
+]

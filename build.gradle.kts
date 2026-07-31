@@ -12,7 +12,7 @@ plugins {
 }
 
 group = "com.codementor"
-version = "0.1.0-SNAPSHOT"
+version = providers.gradleProperty("pluginVersion").get()
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -41,16 +41,25 @@ dependencies {
         // 依赖 Java 插件：提供 PsiMethod / PsiClass 等 Java PSI 能力（本项目核心）
         bundledPlugin("com.intellij.java")
 
-        // 测试框架（阶段 0 暂不写测试，但先把依赖放上，后续直接用）
+        // IntelliJ Platform 测试框架
         testFramework(TestFrameworkType.Platform)
+        // Java PSI / Code Insight 夹具（LightJavaCodeInsightFixtureTestCase）
+        testFramework(TestFrameworkType.Plugin.Java)
     }
 
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testImplementation("junit:junit:4.13.2")
+    // IntelliJ 2024.1 的 JUnit5TestSessionListener 仍引用 junit.framework.TestCase。
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.10.2")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 
 // ---- 插件 DSL 配置 ----
 intellijPlatform {
+    // 本插件没有自定义 searchable-options 关键词。关闭可选的无界面索引，
+    // 避免 IDEA 2024.1 内置 Gradle 配置页在新宿主 JDK 上输出无关异常。
+    buildSearchableOptions = false
+
     pluginConfiguration {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
