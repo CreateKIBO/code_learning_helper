@@ -1,4 +1,4 @@
-# CodeMentor 个人版 — Java / JavaWeb 学习教练（v0.6.0）
+# CodeMentor 个人版 — Java / JavaWeb 学习教练（v1.0.0）
 
 > 这是一个 IntelliJ IDEA 插件，目标是成为你学 Java / JavaWeb 时的"住在 IDE 里的代码教练"。
 > 阶段 0/1 已完成：插件能够采集 PSI 上下文、调用真实模型、校验结构化响应并安全展示建议。
@@ -7,6 +7,15 @@
 > 阶段 4 已加入 JavaWeb 分层角色识别、项目学习约定和薄弱知识点小练习。
 > 阶段 5 已加入“评审 / 解释”双模式、相关字段裁剪、技术标签与 IDEA 诊断摘要。
 > 阶段 6 已加入发送前隐私控制、稳定学习事件关联、本地学习统计和 20 条离线回归语料。
+
+> **v1.0.0 修复**（代码审计后修复的 5 个真实 bug）：
+> - **P0**：设置页 API Key 异步写入竞态——可能静默丢失用户刚填的 Key。改为后台同步写完再更新缓存，并加写入代际防止与读取竞态。
+> - **P0**：学习记录服务关闭时 `shutdownNow()` 会丢弃排队中的学习事件。改为 `shutdown()` + `awaitTermination(2s)` 优雅关闭。
+> - **P1**：「测试连接」按钮在异常回调时可能永久卡在"测试中…"。改用 `whenComplete` 保证异常时也恢复按钮。
+> - **P1**：修改验证期间，编辑**同文件的其他方法**会被误判为"代码又变了"而失败。改用 RangeMarker 只追踪目标方法范围。
+> - **P1**：保存触发的防抖窗口内，用户禁用评审/撤销同意后仍会做无谓 PSI 工作。触发前重检设置。
+>
+> 📐 完整架构与设计决策见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 
 ---
 
@@ -135,7 +144,7 @@
 ./gradlew.bat runIde         # 启动沙箱 IDE
 ```
 
-构建产物：`build/distributions/code-mentor-0.6.0-SNAPSHOT.zip`（可手动安装到真实 IDEA）。
+构建产物：`build/distributions/code-mentor-1.0.0-SNAPSHOT.zip`（可手动安装到真实 IDEA）。
 
 ---
 

@@ -17,6 +17,7 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /** 应用级学习记录入口；用单线程保持追加事件顺序。 */
 @Service(Service.Level.APP)
@@ -144,6 +145,17 @@ public final class LearningHistoryService implements Disposable {
 
     @Override
     public void dispose() {
-        executor.shutdownNow();
+        // 优雅关闭：让排队中的学习事件写完，而不是中断丢弃（P0-B）。
+        // 学习事件写盘很快（单条 JSONL），给 2 秒足够。
+        executor.shutdown();
+        try {
+            if (!executor.awaitTermination(2, TimeUnit.SECONDS)) {
+                LOG.warn("学习记录队列在 2 秒内未排空，剩余事件可能丢失");
+                executor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            executor.shutdownNow();
+        }
     }
 }

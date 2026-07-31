@@ -10,6 +10,7 @@ import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.editor.RangeMarker;
 import com.intellij.openapi.editor.event.DocumentEvent;
 import com.intellij.openapi.editor.event.DocumentListener;
 import com.intellij.openapi.fileEditor.FileEditorManager;
@@ -114,7 +115,7 @@ public final class VerificationCoordinator implements Disposable {
         VerificationRequest request =
                 new VerificationRequest(originalContext, currentContext, suggestion);
         PendingVerification pendingVerification = new PendingVerification(
-                document, session, suggestion.getId(), verificationRequestId);
+                document, session, suggestion.getId(), verificationRequestId, currentContext);
         pending.put(suggestion.getId(), pendingVerification);
         pendingVerification.attach();
         CancellableRequest requestHandle =
@@ -193,15 +194,28 @@ public final class VerificationCoordinator implements Disposable {
         private final String requestId;
         private CancellableRequest request;
         private boolean closed;
+        /**
+         * 目标方法的活体范围（与 {@link ExpiryWatcher} 同思路）。
+         * 验证期间只有改到这个方法范围内才算"代码又变了"，改别处不误判（P1-4）。
+         * 选中模式（范围 -1）时为 null，退化为"任意改动都取消"。
+         */
+        private RangeMarker methodRange;
 
         private PendingVerification(Document document,
                                     ReviewSession session,
                                     String suggestionId,
-                                    String requestId) {
+                                    String requestId,
+                                    ReviewContext currentContext) {
             this.document = document;
             this.session = session;
             this.suggestionId = suggestionId;
             this.requestId = requestId;
+            if (currentContext != null
+                    && currentContext.getMethodStart() >= 0
+                    && currentContext.getMethodEnd() > currentContext.getMethodStart()) {
+                methodRange = document.createRangeMarker(
+                        currentContext.getMethodStart(), currentContext.getMethodEnd(), true);
+            }
         }
 
         private void attach() {
@@ -217,7 +231,24 @@ public final class VerificationCoordinator implements Disposable {
 
         @Override
         public void beforeDocumentChange(@NotNull DocumentEvent event) {
-            cancel("验证期间代码再次变化，请停止输入后重试。");
+            // 只在改动触及目标方法范围时才取消验证；改别处不打扰（P1-4）。
+            if (affectsMethodRange(event)) {
+                cancel("验证期间代码再次变化，请停止输入后重试。");
+            }
+        }
+
+        /** 改动是否触及目标方法范围。无 marker（选中模式）时保守认为触及。 */
+        private boolean affectsMethodRange(DocumentEvent event) {
+            if (methodRange == null || !methodRange.isValid()) {
+                return true;
+            }
+            int start = methodRange.getStartOffset();
+            int end = methodRange.getEndOffset();
+            int offset = event.getOffset();
+            if (event.getOldLength() == 0) {
+                return offset >= start && offset <= end;
+            }
+            return offset < end && offset + event.getOldLength() > start;
         }
 
         private void cancel(String message) {
@@ -234,6 +265,10 @@ public final class VerificationCoordinator implements Disposable {
             if (closed) return;
             closed = true;
             document.removeDocumentListener(this);
+            if (methodRange != null) {
+                methodRange.dispose();
+                methodRange = null;
+            }
         }
     }
 }

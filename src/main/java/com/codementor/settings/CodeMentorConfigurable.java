@@ -3,6 +3,9 @@ package com.codementor.settings;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
+import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.ProgressManager;
+import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
@@ -15,6 +18,7 @@ import org.jetbrains.annotations.Nullable;
 import javax.swing.*;
 import java.awt.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * CodeMentor 设置页（方案第 12 节）。
@@ -48,6 +52,12 @@ public class CodeMentorConfigurable implements Configurable {
 
     // 记录打开设置页时从 PasswordSafe 读到的 Key（用于 isModified 比较）
     private volatile String originalApiKey;
+    /**
+     * PasswordSafe 写入代际：每次 apply 写 Key 时 +1，写完后再 +1。
+     * reset 的异步读会检查这个值——若读期间发现有"已发起但未完成"的写入，
+     * 就跳过本次读取，避免读到旧值（P0-A 竞态修复）。
+     */
+    private final AtomicLong writeGeneration = new AtomicLong(0);
 
     @Override
     public @Nls(capitalization = Nls.Capitalization.Title) String getDisplayName() {
@@ -178,10 +188,25 @@ public class CodeMentorConfigurable implements Configurable {
         s.setSaveReviewEnabled(enableSaveReviewCheckBox.isSelected());
         s.setPreviewEveryManualRequest(previewEveryRequestCheckBox.isSelected());
         s.setExcludedFilePatterns(excludedPatternsArea.getText().trim());
-        // PasswordSafe 阻塞，必须后台线程
+        // API Key 走 PasswordSafe（阻塞），用后台任务同步写完后再回 EDT 更新 originalApiKey。
+        // 关键：不能 fire-and-forget——否则用户关闭设置页太快，写入可能没完成，Key 丢失（P0-A）。
         String newKey = apiKeyText();
-        CompletableFuture.runAsync(() -> ApiKeyStore.setApiKey(newKey == null || newKey.isEmpty() ? null : newKey.trim()));
-        originalApiKey = newKey;
+        String trimmed = newKey == null || newKey.isEmpty() ? null : newKey.trim();
+        // 标记"写入已开始"，reset 的异步读读到这个奇数代际会跳过
+        long gen = writeGeneration.incrementAndGet();
+        ProgressManager.getInstance().run(new Task.Backgroundable(null, "保存 API Key…", false) {
+            @Override
+            public void run(@org.jetbrains.annotations.Nullable ProgressIndicator indicator) {
+                ApiKeyStore.setApiKey(trimmed);
+            }
+
+            @Override
+            public void onSuccess() {
+                // 写入真正完成后，才更新 originalApiKey，并标记写入完成（代际再 +1 变偶数）
+                originalApiKey = newKey == null ? "" : newKey.trim();
+                writeGeneration.incrementAndGet();
+            }
+        });
     }
 
     @Override
@@ -197,6 +222,11 @@ public class CodeMentorConfigurable implements Configurable {
         // PasswordSafe 阻塞，异步加载，先置空
         apiKeyField.setText("");
         originalApiKey = "";
+        // 读之前检查：若有"已发起但未完成"的写入（代际为奇数），跳过本次读取，
+        // 避免和 apply 的写入竞态读到旧值（P0-A）。
+        if (writeGeneration.get() % 2L != 0L) {
+            return;
+        }
         CompletableFuture.runAsync(() -> {
             String key = ApiKeyStore.getApiKey();
             originalApiKey = key == null ? "" : key;
@@ -215,14 +245,16 @@ public class CodeMentorConfigurable implements Configurable {
         testConnectionButton.setText("测试中…");
         String url = apiUrlField.getText().trim();
         String model = modelField.getText().trim();
-        // 用临时 Key（还没 apply），后台发最小请求
+        // 用临时 Key（还没 apply），后台发最小请求。用 whenComplete 保证异常时也恢复按钮（P1-2）。
         CompletableFuture.supplyAsync(() ->
                 com.codementor.model.ZhiPuModelClient.testConnection(url, key, model))
-                .thenAccept(result -> {
+                .whenComplete((result, err) -> {
                     ApplicationManager.getApplication().invokeLater(() -> {
                         testConnectionButton.setEnabled(true);
                         testConnectionButton.setText("测试连接");
-                        if (result.success) {
+                        if (err != null) {
+                            Messages.showErrorDialog("连接失败：" + err.getMessage(), "CodeMentor");
+                        } else if (result.success) {
                             Messages.showInfoMessage("连接成功！" + (result.message == null ? "" : "\n" + result.message), "CodeMentor");
                         } else {
                             Messages.showErrorDialog("连接失败：" + result.message, "CodeMentor");

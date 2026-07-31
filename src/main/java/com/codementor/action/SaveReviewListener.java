@@ -58,6 +58,14 @@ public final class SaveReviewListener implements FileDocumentManagerListener {
                     if (document.getModificationStamp() != expectedStamp) {
                         return;
                     }
+                    // 纵深防御：750ms 窗口内用户可能改了设置（禁用评审/撤销同意），
+                    // 触发前重检，避免无谓的 PSI 工作和潜在绕过（P1-1）。
+                    CodeMentorSettings current = CodeMentorSettings.getInstance();
+                    if (!current.isReviewEnabled()
+                            || !current.isSaveReviewEnabled()
+                            || !current.hasConsentedToSend()) {
+                        return;
+                    }
                     ApplicationManager.getApplication().invokeLater(
                             () -> triggerForOpenProject(document, modifiedOffset));
                 },
