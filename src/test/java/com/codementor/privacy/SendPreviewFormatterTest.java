@@ -32,8 +32,8 @@ class SendPreviewFormatterTest {
 
         String preview = SendPreviewFormatter.format(context, 10_000);
 
-        assertTrue(preview.contains("模式：解释这段代码"));
         assertTrue(preview.contains(".codementor/rules.md"));
+        assertFalse(preview.contains("src/Demo.java"));
         assertTrue(preview.contains("***"));
         assertFalse(preview.contains("secret-value"));
         assertFalse(preview.contains("project-secret"));

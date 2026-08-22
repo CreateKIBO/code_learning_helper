@@ -2,8 +2,7 @@ package com.codementor.review;
 
 import com.codementor.practice.Exercise;
 import com.codementor.practice.ExerciseRequest;
-
-import java.util.List;
+import com.codementor.model.ModelRequestConfig;
 
 /**
  * 导师模型客户端 —— 统一接口（方案第 12 节"统一接口 + 可配置适配器"）。
@@ -23,10 +22,14 @@ public interface ReviewService {
      * @param requestId 请求 ID，用于日志追踪
      * @param callback 结果回调：成功给建议列表，失败给错误信息
      */
-    CancellableRequest review(ReviewContext context, String requestId, Callback callback);
+    CancellableRequest review(
+            ModelRequestConfig config,
+            ReviewContext context,
+            String requestId,
+            Callback callback);
 
     interface Callback {
-        void onSuccess(List<Suggestion> suggestions);
+        void onSuccess(ReviewResult result);
         void onFailure(String errorMessage);
     }
 
@@ -38,7 +41,10 @@ public interface ReviewService {
      * @param callback 结构化验证结果
      */
     CancellableRequest verify(
-            VerificationRequest request, String requestId, VerificationCallback callback);
+            ModelRequestConfig config,
+            VerificationRequest request,
+            String requestId,
+            VerificationCallback callback);
 
     interface VerificationCallback {
         void onSuccess(VerificationResult result);
@@ -46,7 +52,10 @@ public interface ReviewService {
     }
 
     CancellableRequest followUp(
-            FollowUpRequest request, String requestId, FollowUpCallback callback);
+            ModelRequestConfig config,
+            FollowUpRequest request,
+            String requestId,
+            FollowUpCallback callback);
 
     interface FollowUpCallback {
         void onSuccess(String answer);
@@ -54,7 +63,10 @@ public interface ReviewService {
     }
 
     CancellableRequest generateExercise(
-            ExerciseRequest request, String requestId, ExerciseCallback callback);
+            ModelRequestConfig config,
+            ExerciseRequest request,
+            String requestId,
+            ExerciseCallback callback);
 
     interface ExerciseCallback {
         void onSuccess(Exercise exercise);

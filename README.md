@@ -1,235 +1,101 @@
-# CodeMentor 个人版 — Java / JavaWeb 学习教练（v1.0.0）
+# CodeMentor 1.2.0 — Java / JavaWeb 学习教练
 
-> 这是一个 IntelliJ IDEA 插件，目标是成为你学 Java / JavaWeb 时的"住在 IDE 里的代码教练"。
-> 阶段 0/1 已完成：插件能够采集 PSI 上下文、调用真实模型、校验结构化响应并安全展示建议。
-> 阶段 2 已加入“自己修改 → 验证结果 → 反馈 → 本地学习记录 → Markdown 导出”的学习闭环。
-> 阶段 3 已加入可选保存触发、请求取消、指纹缓存、建议去重、追问和复习提醒。
-> 阶段 4 已加入 JavaWeb 分层角色识别、项目学习约定和薄弱知识点小练习。
-> 阶段 5 已加入“评审 / 解释”双模式、相关字段裁剪、技术标签与 IDEA 诊断摘要。
-> 阶段 6 已加入发送前隐私控制、稳定学习事件关联、本地学习统计和 20 条离线回归语料。
+CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理解自己的代码 → 自己修改 → 验证结果 → 复习薄弱点”工作，不自动改代码、不生成完整项目，也不代写课程或毕业设计。
 
-> **v1.0.0 修复**（代码审计后修复的 5 个真实 bug）：
-> - **P0**：设置页 API Key 异步写入竞态——可能静默丢失用户刚填的 Key。改为后台同步写完再更新缓存，并加写入代际防止与读取竞态。
-> - **P0**：学习记录服务关闭时 `shutdownNow()` 会丢弃排队中的学习事件。改为 `shutdown()` + `awaitTermination(2s)` 优雅关闭。
-> - **P1**：「测试连接」按钮在异常回调时可能永久卡在"测试中…"。改用 `whenComplete` 保证异常时也恢复按钮。
-> - **P1**：修改验证期间，编辑**同文件的其他方法**会被误判为"代码又变了"而失败。改用 RangeMarker 只追踪目标方法范围。
-> - **P1**：保存触发的防抖窗口内，用户禁用评审/撤销同意后仍会做无谓 PSI 工作。触发前重检设置。
->
-> 📐 完整架构与设计决策见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
+1.2.0 发布基线日期：2026-08-22。
 
----
+[安装与升级](docs/INSTALL.md) · [1.2.0 体验升级](docs/UX-RELEASE-1.2.md) · [隐私说明](PRIVACY.md) · [架构文档](docs/ARCHITECTURE.md) · [变更记录](CHANGELOG.md)
 
-## 1. 当前能力
+## 主要能力
 
-当前验收目标：
+| 能力 | 使用方式 | 结果 |
+|------|----------|------|
+| 代码评审 | 选中代码或把光标放在 Java 方法内，按 `Alt+M` | 整体总结，以及最多 3 条带原文证据、最小下一步和自测问题的建议 |
+| 代码解释 | 按 `Alt+Shift+M` | 按当前教学级别建立执行流程或职责心智模型，不计入重复错误统计 |
+| 修改验证 | 在完整方法评审的建议卡片中选择“我改好了，验证” | 通过活体方法锚点对比原上下文与当前同一方法；选中片段不显示验证入口 |
+| 追问 | 从常用问题或自定义问题继续追问 | 在当前上下文和建议范围内讲解，并在当前内存会话显示最近一次问题与回答 |
+| JavaWeb 专项 | 自动识别 Controller、Service、Repository、DTO 等 | 补充分层角色、技术标签和有限 IDE 诊断摘要 |
+| 复习与练习 | 查看学习统计、导出复习清单或生成小练习 | 按不同评审次数汇总并合并名称变体，排除已解决、误报和低置信度建议；练习提示按需逐条展开且不发送项目源码 |
+| 可选保存触发 | 在设置中显式开启 | 保存 Java 文件后评审最后实际编辑的方法，默认关闭 |
 
-> **帮助你理解并修改自己的 Java 代码，形成“发现问题—自己修改—再次验证—复习练习”的闭环。**
+项目根目录可放置 `.codementor/rules.md`，用于补充个人学习约定。该文件会随评审上下文发送，请勿写入密钥或无权披露的信息。
 
-为此本阶段实现了：
+## 1.2.0 的交互与智能辅助升级
 
-| 能力 | 文件 | 说明 |
-|------|------|------|
-| PSI 上下文采集 | `context/PsiContextExtractor.java` | 选中代码优先；未选中取光标所在 `PsiMethod` |
-| 评审状态机 | `review/ReviewSession.java` | UI 的唯一状态来源，支持 IDLE/REQUESTING/SUCCESS/FAILED/EXPIRED |
-| 代码指纹 + 文档 stamp | `review/ReviewContext.java` | 修正"只靠行号定位"的硬伤（行号会漂移） |
-| 真实模型 | `model/ZhiPuModelClient.java` | OpenAI 兼容请求、结构化解析和一次解析重试 |
-| 触发动作 | `action/ReviewAction.java` | Alt+M / 右键菜单，PSI 读锁采集 + EDT 更新 |
-| 修改验证 | `review/VerificationCoordinator.java` | 重新采集当前方法，验证单条建议是否解决 |
-| 学习记录 | `history/` | JSONL 追加事件、本地统计、Markdown 导出 |
-| 教练侧栏 | `ui/MentorToolWindowFactory.java` + `MentorToolWindowPanel.java` | 建议、反馈、验证状态和复习导出 |
-| JavaWeb 场景识别 | `javaweb/JavaWebContextAnalyzer.java` | 识别 Controller / Service / Repository / DTO 等角色与专项关注点 |
-| 项目学习约定 | `javaweb/ProjectLearningRulesService.java` | 后台读取并缓存 `.codementor/rules.md`，最多 8000 字符 |
-| 小练习 | `practice/` | 根据重复知识点生成一道 10~20 分钟练习，不发送项目源码、不生成完整项目 |
-| 双模式学习 | `action/ReviewAction.java` + `ExplainAction.java` | `Alt+M` 评审写法，`Alt+Shift+M` 解释代码 |
-| 精确模型上下文 | `context/ModelContextBuilder.java` | 目标代码优先，补充相关字段、技术标签和有限 IDEA 诊断摘要 |
-| 文件排除与发送预览 | `privacy/` | 内置/自定义排除模式；模型调用前停止；预览内容再次脱敏 |
-| 本地学习统计 | `history/LearningEventStore.java` | 按稳定评审 ID 聚合验证、讲解、反馈与薄弱知识点 |
-| 离线回归基线 | `test/resources/regression/java-learning-corpus.json` | 20 条 Java/JavaWeb 语料，不调用真实模型 |
+- 空状态直接提供“评审当前代码”“解释当前代码”和“配置模型”入口，不再要求首次使用者先记住快捷键或自行寻找设置页。
+- 评审/解释请求可点“取消本次请求”，追问等待时按钮变为“取消追问”，小练习生成支持“取消生成”和失败重试；评审失败同时提供“重试当前操作”和“打开设置”。修改验证没有单独取消入口，但新评审、代码继续变化或会话重置会取消它。所有取消都无法召回模型服务已经收到的数据。
+- 顶部只保留当前主要操作，“发送预览、学习统计、导出复习、隐私与数据、设置”收纳到“更多…”菜单，窄侧栏中更易使用。
+- 同一评审会话内，讲解/示例展开状态和滚动位置在反馈、验证、追问或逐条查看练习提示导致刷新时保持；开始新评审后会重置为新的学习流程。
+- 模型响应使用 `ReviewResult` 同时保留整体 `summary` 和建议列表。评审模式没有建议时会明确显示“未发现需要优先处理的问题”；解释模式必须至少返回一个中性的理解要点。summary 中明显声称已编译、运行或测试成功的结果会在本地拒绝。
+- 每条建议新增 `nextStep` 与 `selfCheckQuestion`：前者只给学习者现在亲手完成的一步，后者用于主动回忆；插件仍不会自动修改源码。
+- 模型被要求从实际发送的 `JAVA_CODE` 中引用空白等价的连续证据，不得改写非空白字符。响应返回后，插件会在本地同时确认规范化证据存在于本次发送上下文和脱敏后的目标源码，不能借用 package、imports、诊断摘要或技术标签；修改验证的证据还必须来自当前版本的目标源码。任一结果无法核对时拒绝整次结构化结果，而不是展示可能臆造的证据。
+- 评审与解释采用不同的教学目标；“初学、进阶、JavaWeb”三个级别分别调整术语、对象协作或 Web 分层侧重点，UI 也区分“明确问题、可能风险、设计取舍”和“理解要点”。
+- 当单个目标超过 16,000 字符预算时，保留目标首部和尾部并插入明确的中段截断标记；提示词同时告知模型只能判断可见片段，不得断言不可见逻辑不存在。
+- 本地薄弱知识点按不同评审次数计数，同一次评审的重复建议只算一次，并合并大小写、空白、标点、全角形式和少量保守的 Java/JavaWeb 同义标签；已验证解决、已标记误报或低置信度建议不会继续计为薄弱点。练习优先选择重复薄弱点，没有时只回退到当前尚未解决、非误报且非低置信度的建议。追问问答只存在于当前项目内存会话，不写入历史或导出。
 
-**有意不做**：整项目生成、毕业设计代写、服务端账号系统、行内 Inlay / 波浪线 / QuickFix。
+完整交互说明与验证状态见 [1.2.0 体验升级说明](docs/UX-RELEASE-1.2.md)。
 
-### 建议重点测试
+## 延续自 1.1.0 的安全与隐私基线
 
-1. **自动过期检测** ⭐ 核心安全机制
-   - 评审成功后，在**被评审的方法内**改一个字符 → 侧栏顶部立刻弹出橙色"代码已修改，建议可能过期"横幅
-   - 改**别的方法**不会误报（只追踪目标方法范围）
-2. **重新评审按钮**
-   - 评审成功/过期/失败后，侧栏右上角出现「重新评审」按钮，点击等同 Alt+M
-3. **空状态美化**
-   - 刚打开侧栏时，显示居中图标 + "按 Alt+M 评审当前方法"引导
-4. **修改验证与学习记录**
-   - 修改代码后，过期横幅下仍保留原建议
-   - 点击“验证我的修改”，查看已解决/部分解决/仍未解决
-   - 对建议标记“有帮助/没帮助/误报”，再点“导出复习”生成 Markdown
-5. **阶段 3 日常体验**
-   - 在 Settings → Tools → CodeMentor 中可选开启“保存时评审”，默认关闭
-   - 保存触发只评审最后实际编辑的方法；无法可靠定位时会跳过，不根据已移走的光标猜测
-   - 编辑评审目标时会取消尚未完成的旧请求
-   - 相同代码指纹和模型配置直接复用内存缓存
-   - 可针对单条建议追问；知识点累计出现 3 次后显示复习提醒
-6. **阶段 4 JavaWeb 专项**
-   - Controller / Service / Repository / DTO 会显示对应角色和评审重点
-   - 项目根目录存在 `.codementor/rules.md` 时，评审会参考其中的个人学习约定
-   - 点击“生成小练习”，会优先选择近期重复出现的知识点；无重复记录时使用当前建议
-7. **阶段 5 双模式与精确上下文**
-   - `Alt+M` 返回需要自己修改和验证的建议
-   - `Alt+Shift+M` 返回理解要点，不计入重复错误统计，也不显示“验证我的修改”
-   - 侧栏显示识别到的 JavaWeb 角色和技术标签
-   - 模型上下文只包含目标实际引用的类字段；IDEA 错误/警告只作为解释依据
-8. **阶段 6 隐私控制与学习成效**
-   - Settings → Tools → CodeMentor 可配置文件排除模式和“每次手动发送前预览”
-   - `.env`、私钥、证书、构建目录等内置敏感路径在上下文采集和模型调用前停止
-   - 侧栏“发送预览”显示当前请求的脱敏内容；“学习统计”只汇总本机 JSONL 事件
-   - 自动测试覆盖 20 条 Java/JavaWeb 回归语料，全程不消耗 API 额度
+- 模型配置在每次操作开始时捕获为不可变快照，包含规范化端点、模型、教学级别和提示协议版本；请求进行中修改设置不会让同一请求前后漂移。
+- 默认只接受带请求路径的 HTTPS 端点，并拒绝 URL 用户信息、查询参数和片段。HTTP 只在用户显式开启后允许 `localhost`、`127.0.0.0/8` 或 `::1` 回环地址。
+- 发送授权按“项目 × 规范化端点”保存。某个项目对端点 A 的授权不会用于端点 B；模型名称变化不会单独改变授权。
+- 首次需要发送缓存未命中的手动评审或解释时，显示可滚动的完整脱敏上下文预览，最多展示 32,000 个字符；超出时会明确标记截断。可选设置让每次需要发送的手动评审/解释都再次确认。
+- 评审、修改验证、追问和练习在操作边界统一经过 `OutboundRequestGuard`，检查功能开关和项目端点授权；有代码上下文时还检查项目边界和适用的文件排除规则。连接测试只发送最小测试提示，不携带项目学习上下文。
+- 预览和真实评审请求复用同一个脱敏载荷；秘密遮盖覆盖常见赋值、认证头、JWT、令牌前缀、URI 凭据、查询参数和私钥块。遮盖是尽力保护，不能代替人工确认。
+- API Key 只保存到 IntelliJ PasswordSafe。设置页不会把已保存密钥回填到输入框，新增、替换和删除都需要用户显式操作。
+- 撤销授权、更换端点、关闭总功能开关或更改/清除 API Key 时，会重置相关已打开项目会话，并尽力取消其评审、验证、追问和练习；远程服务已经收到的数据无法召回。
+- 网络响应、结构化字段、列表和本地历史均有容量上限，避免异常服务响应或长期历史造成无界内存/磁盘占用。
 
-### 1.1 健壮性保护
+## 环境与安装
 
-1. **迟到响应守卫** ⭐
-   - 每次请求有唯一 requestId，`ReviewSession` 只接受当前请求的成功/失败/过期回调
-   - 快速连按 Alt+M 时，慢的旧响应回来会被直接丢弃，不会覆盖新会话
-2. **过期检测改用 RangeMarker**
-   - 旧实现用静态 offset 判断，用户在**方法外**编辑后 offset 漂移 → 误报 + 漏报
-   - RangeMarker 随编辑自动平移/伸缩，改别的方法不再误判；纯插入/纯删除判定也补齐了
-3. **评审期间即开始监控**
-   - watcher 从"成功后挂载"提前到"请求发起时挂载"：评审进行中改代码会立刻标过期，
-     迟到的响应再回来也会被守卫丢弃——旧结果永远盖不到新代码上
-4. **监听器泄漏修复**
-   - 侧栏面板销毁时退订项目级 `ReviewSession`，项目关闭不再泄漏
-5. **小动作**
-   - `update()` 改看 `VirtualFile` 扩展名，BGT 线程零 PSI 接触
-   - 文件路径真正改为相对项目根（不再把本机绝对路径写进日志）
-   - 清理未使用 import、误导性注释、占位 vendor url
+- IntelliJ IDEA 2024.1.x（build `241.*`）
+- 从源码构建使用 JDK 17；安装 ZIP 时无需额外安装插件运行时
+- Gradle Wrapper 9.0.0；CI 固定校验 Wrapper JAR，官方发行包 URL 与 SHA-256 也已固定
+- 默认模型端点：`https://open.bigmodel.cn/api/paas/v4/chat/completions`
+- 默认模型：`glm-5.2`
 
----
+构建并完成发布前校验：
 
-## 2. 环境要求
-
-| 项 | 要求 | 你的情况 |
-|----|------|----------|
-| IntelliJ IDEA | **2024.1.1**（目标平台，build 241，JBR 17） | ✅ |
-| JDK | **Java 17**（与 IDEA 2024.1 的 JBR 一致） | ✅ 已装 17.0.8 |
-| Gradle | 不需要单独装，用项目里的 `gradlew`（指向 Gradle 9.0） | ✅ |
-| 网络 | 首次构建需下载 Gradle 发行版和 IntelliJ Platform 依赖 | 需可访问 services.gradle.org |
-
-> 如果首次下载 Gradle 很慢，可在 `gradle/wrapper/gradle-wrapper.properties` 把 `distributionUrl` 换成腾讯/阿里镜像（见本文件第 6 节）。
-
----
-
-## 3. 在 IDEA 里运行插件（推荐方式）
-
-最简单、最适合学习的方式：
-
-1. **用 IntelliJ IDEA 2024.1.1 打开本项目**
-   - File → Open → 选 `G:\code_learning_helper`
-   - IDEA 会自动识别为 Gradle 项目，开始下载 Gradle 9.0 + 依赖（**首次可能 5~15 分钟**，取决于网速）
-2. **等右下角进度条走完**（"Indexing..." / "Gradle sync"）
-3. **运行沙箱 IDE**
-   - 右侧 Gradle 面板 → `Tasks → intellij platform → runIde`，双击
-   - 或者：右上角"Run Configuration"下拉 → 选 `runIde` → 点绿色三角 ▶
-4. **会启动一个新的 IDEA 窗口**（这就是"沙箱 IDE"，插件装在里面）
-5. **在沙箱 IDE 里**：
-   - 随便打开一个 Java 文件，光标放到某个方法里
-   - 按 **Alt+M**，或右键 → "请导师评审(M)"
-   - 右侧应该弹出 **CodeMentor** 侧栏，显示"评审目标：类名#方法名"，状态从"评审中…"变成"评审完成"，列出 3 条建议卡片
-   - 点卡片标题可展开"为什么 / 参考示例 / 知识点"
-
----
-
-## 4. 命令行构建（不打开 IDEA 也能验证）
-
-```bash
-# 在项目根目录（Git Bash 或 cmd）
-./gradlew.bat build          # 完整构建 + 打包插件 zip
-./gradlew.bat compileJava    # 只编译，最快验证代码对不对
-./gradlew.bat runIde         # 启动沙箱 IDE
+```powershell
+.\gradlew.bat clean test verifyPluginProjectConfiguration verifyPluginStructure verifyPlugin buildPlugin
 ```
 
-构建产物：`build/distributions/code-mentor-1.0.0-SNAPSHOT.zip`（可手动安装到真实 IDEA）。
+已验证的 1.2.0 产物位于 `build/distributions/code-mentor-1.2.0.zip`。通过 `Settings / Preferences → Plugins → Install Plugin from Disk...` 选择该 ZIP；完整步骤、升级、回退和卸载说明见 [安装指南](docs/INSTALL.md)。2026-08-22 的发布检查通过 106 项测试（0 失败/错误/跳过）、项目配置与插件结构检查，并由 Plugin Verifier 判定兼容 IntelliJ IDEA 2024.1.1（IC-241.15989.150）。安装包为 257,669 bytes（约 251.6 KiB），SHA-256：`F0E1CD2BE49699F192E95AA0D8CE0A84D49DD4DC2AC9D0A159ABAEA7A2E06416`。
 
----
+开发时启动沙箱 IDE：
 
-## 5. 常见问题
-
-**Q1：首次 `runIde` 卡在下载 Gradle / 依赖？**
-A：国内网络访问 `services.gradle.org` 可能很慢。把 `gradle/wrapper/gradle-wrapper.properties` 的 `distributionUrl` 改为镜像，例如：
-```
-distributionUrl=https\://mirrors.cloud.tencent.com/gradle/gradle-9.0.0-bin.zip
-```
-依赖仓库（`build.gradle.kts` 里的 `mavenCentral()`）也可加阿里云镜像：
-```kotlin
-maven { url = uri("https://maven.aliyun.com/repository/public") }
+```powershell
+.\gradlew.bat runIde
 ```
 
-**Q2：报错 "Plugin can't be loaded: requires Java 21"？**
-A：不会出现。本项目 `pluginSinceBuild=241`、目标 IDE 2024.1 用 JBR 17。如果你看到这个错，说明沙箱 IDE 起错了版本，检查 `build.gradle.kts` 里 `intellijIdeaCommunity("2024.1.1")` 是否正确。
+## 初次配置
 
-**Q3：按 Alt+M 没反应？**
-A：先确认——
-1. 当前打开的是 `.java` 文件（非 `.txt`/`.md`）
-2. 光标在某个方法**内部**，或者**选中**了一段代码
-3. 右键编辑器，菜单底部能看到 "请导师评审(M)"
-4. 看 IDEA 右下角 CodeMentor 侧栏图标，点开看是否有错误提示
+进入 `Settings / Preferences → Tools → CodeMentor`：
 
-**Q4：修改后为什么建议显示“已过期”？**
-A：这是安全保护。原建议仍会保留供你点击“验证我的修改”，但插件不会把旧建议冒充成对新代码的实时结论。
+1. 保留默认 HTTPS 端点或填写自己的 OpenAI 兼容端点。
+2. 保留默认 `glm-5.2` 或填写端点支持的模型名。
+3. 输入 API Key。留空不会覆盖 PasswordSafe 中已有的 Key；如需删除，勾选“删除 PasswordSafe 中已保存的 API Key”。
+4. 按需选择中文显示的“初学、进阶、JavaWeb”教学级别，并设置保存触发、每次手动预览和文件排除规则。
+5. 只有本机模型或调试代理确实需要时，才开启“允许 HTTP 本机回环端点”。
+6. 点击“测试连接”。结果会显示在设置页内；测试只发送“只回复 OK”的最小提示，不发送项目源码。
 
----
+第一次需要把某项目的未缓存评审/解释上下文发送到当前端点时，预览确认框会显示目标端点和脱敏内容。选择“发送并记住此地址”后，该项目才能继续向同一端点执行评审、验证、追问和练习。切换到未授权端点时，需要先发起新的手动评审/解释并完成确认；纯本地缓存命中不会发送网络请求，也不需要为了显示缓存结果建立授权。
 
-## 6. 项目结构
+## 推荐学习流程
 
-```
-code_learning_helper/
-├── build.gradle.kts              # 构建：IntelliJ Platform Gradle Plugin 2.x
-├── settings.gradle.kts
-├── gradle.properties             # 目标 IDE 版本、插件兼容范围
-├── gradlew / gradlew.bat         # Gradle Wrapper（指向 Gradle 9.0）
-├── gradle/wrapper/
-│   ├── gradle-wrapper.jar
-│   └── gradle-wrapper.properties
-└── src/main/
-    ├── java/com/codementor/
-    │   ├── action/ReviewAction.java          # Alt+M 触发评审
-    │   ├── context/PsiContextExtractor.java  # PSI 读取选中/当前方法
-    │   ├── review/
-    │   │   ├── ReviewService.java            # 统一模型接口
-    │   │   ├── FakeReviewService.java        # 离线演示 / 自动测试桩
-    │   │   ├── ReviewSession.java            # 状态机（UI 唯一来源）
-    │   │   ├── ReviewContext.java            # 上下文 + 指纹
-    │   │   ├── ReviewStatus.java             # 状态枚举
-    │   │   ├── Suggestion.java               # 建议数据模型
-    │   │   └── VerificationCoordinator.java  # 修改验证流程
-    │   ├── history/                           # JSONL 学习事件 + Markdown 导出
-    │   ├── javaweb/                           # 分层角色识别 + 项目学习约定
-    │   ├── privacy/                           # 文件排除、敏感信息遮盖、发送预览
-    │   ├── practice/                          # 薄弱知识点小练习
-    │   └── ui/
-    │       ├── MentorToolWindowFactory.java  # 侧栏工厂
-    │       ├── MentorToolWindowPanel.java    # 侧栏状态与整体布局
-    │       └── SuggestionCardPanel.java      # 单条建议交互
-    └── resources/META-INF/plugin.xml         # 注册 Action / ToolWindow
-```
+1. 把光标放在一个方法内，在空状态点击“评审当前代码”或按 `Alt+M`；想先理解代码时选择“解释当前代码”或按 `Alt+Shift+M`。
+2. 先核对代码依据，回答“先想一想”，再完成卡片给出的一个最小下一步。
+3. 需要时展开“理解原因”和“查看参考”；参考示例不是唯一答案，也不会自动写入编辑器。
+4. 对完整方法修改后点击“我改好了，验证”，再回答自测问题，检查是否真正理解和解决问题。选中片段仍可评审和解释，但为避免把无关选区误当成原目标，暂不提供修改验证。
+5. 对建议标记“有帮助”“没帮助”或“误报”；追问可直接选择“换一种更简单的说法”“给一个更小的例子”“怎样验证我真的理解了”，也可输入自定义问题，等待时可以取消。
+6. 使用“更多… → 学习统计/导出复习清单”查看本地学习结果，或生成小练习并按需逐条查看提示。
 
----
+完整方法评审会保留随普通编辑移动的 `RangeMarker` 作为验证锚点；选区没有可安全复定位的方法锚点。整篇文件替换或磁盘重载会直接使锚点失效，避免把相同偏移处的新方法当成原目标。由于请求上下文还可能包含 imports、类注解、引用字段和诊断，同一 Java 文件发生任意编辑都会保守地让当前结果过期并同步使旧回调失效；一次验证完成后再次编辑同一文件，旧验证结论会恢复为未验证。每条请求使用完整 UUID 做状态关联，迟到响应不能进入会话、缓存或历史。
 
-## 7. 可选的项目学习约定
+## 文件排除与发送预览
 
-在你正在学习的项目根目录创建 `.codementor/rules.md`，例如：
-
-```markdown
-# 我的学习约定
-- Controller 只负责 HTTP 输入输出与调用 Service
-- 优先提示我理解事务传播，不要直接给最终答案
-- REST 接口错误统一由全局异常处理器转换
-```
-
-文件内容会和当前评审上下文一起发送给已配置的模型服务，请不要在其中写入密钥。
-CodeMentor 将它作为编码与学习约定，不能用它覆盖系统提示或要求执行代码。
-
----
-
-## 8. 隐私排除与发送预览
-
-在 Settings → Tools → CodeMentor 中可逐行或用分号填写自定义 glob，例如：
+自定义排除模式支持每行或分号分隔的 `*`、`**`、`?` glob：
 
 ```text
 **/internal/**
@@ -237,7 +103,53 @@ CodeMentor 将它作为编码与学习约定，不能用它覆盖系统提示或
 src/test/fixtures/secrets/**
 ```
 
-规则忽略大小写，支持 `*`、`**`、`?`。内置规则始终排除 `.env`、常见私钥/证书、
-`.git`、`.idea`、`build`、`target`、`out` 和 `node_modules`。命中后不会采集 PSI、
-读取项目学习约定或调用模型。首次发送仍需确认，也可开启“每次手动发送前预览”；
-侧栏中的“发送预览”可以随时检查最近一次请求的脱敏内容。
+内置规则会排除 `.env`、常见私钥/证书/密钥库、`.git`、`.idea`、`build`、`target`、`out` 和 `node_modules`。项目目录外文件也不会采集或发送。
+
+侧栏“更多… → 查看发送预览”用于查看当前评审会话的脱敏上下文。它不是原始 HTTP JSON，也不展示 Authorization 请求头或系统提示；修改验证、追问和练习仍由统一出站守卫控制，但不会各自弹出这份评审上下文预览。
+
+## 本地学习历史
+
+自 1.1.0 起写入的学习事件只保存学习统计所需的摘要元数据：项目名、隐私安全的相对文件路径或文件名、目标名、知识点、建议标题、反馈和验证状态。1.2.0 的 `REVIEWED` 事件额外保存结构化置信度和不含代码的评审标识，用于本地薄弱点过滤并可靠区分不同评审；旧记录没有这些字段，因此仍可出现在统计与导出中，但不会驱动“不同评审中重复出现”的薄弱点判断。历史不保存完整代码、模型 `evidence`、验证证据、追问问题或回答；名称与标题仍可能间接反映项目内容。
+
+历史文件位于 IntelliJ system 目录的 `codementor/learning-events.jsonl`：
+
+- 活动文件上限 4 MiB，并保留一个上限 4 MiB 的 `.1` 轮转文件；
+- 单行上限 32,768 个字符，读取时最多保留最近 20,000 条事件；
+- 使用流式、有界读取，损坏行或非法 UTF-8 不影响其余记录；
+- Markdown 导出会转义 HTML、链接和控制字符，并继续排除模型证据与完整代码。
+
+因此学习统计和导出反映当前保留窗口，不代表无限期的终身累计。
+
+优先通过侧栏“更多… → 隐私与数据”撤销当前项目授权或一键清除全部学习历史。撤销会重置当前会话并尽力取消项目中的模型任务。设置页还可撤销所有已打开项目的授权并删除 PasswordSafe 中的 API Key。卸载和手工清理见 [隐私说明](PRIVACY.md) 与 [安装指南](docs/INSTALL.md)。
+
+## 项目结构
+
+```text
+src/main/java/com/codementor/
+├── action/      用户动作、保存触发和最后编辑目标
+├── context/     PSI 目标采集、相对路径、模型上下文和诊断摘要
+├── review/      结构化评审结果、会话状态、协调器、过期检测、缓存和修改验证
+├── model/       不可变请求配置、端点校验、证据核验、HTTP 传输、提示与解析
+├── privacy/     文件排除、统一出站守卫、脱敏载荷和预览格式
+├── history/     有界 JSONL、轮转、统计、导出和清理
+├── javaweb/     JavaWeb 分层角色和项目学习约定
+├── practice/    薄弱知识点小练习
+├── settings/    非敏感设置、项目端点授权和 PasswordSafe
+└── ui/          Tool Window、建议卡片和可滚动发送预览
+```
+
+插件自己的后台任务统一提交到 IntelliJ 管理的执行器、有界应用池与 `ReadAction.nonBlocking`。完整的请求流、容量边界和线程约束见 [架构文档](docs/ARCHITECTURE.md)。
+
+## 测试
+
+常规测试不调用真实模型。除 PSI、上下文、隐私过滤、解析、证据核验、状态机、缓存、历史轮转和回归语料外，`ModelHttpTransportTest` 会启动本机临时 HTTP 服务验证真实请求契约，包括 Bearer 鉴权、UTF-8 JSON、结构化输出声明、超大响应拒绝和错误信息截断。
+
+```powershell
+.\gradlew.bat test
+```
+
+1.2.0 的最终结果为 106 项测试全通过、IDEA 2024.1.1 Plugin Verifier `Compatible`，ZIP 内容与 SHA-256 已核对；详细记录见 [安装指南](docs/INSTALL.md#120-发布验证状态)。
+
+## 明确边界
+
+CodeMentor 不执行项目命令、不自动应用补丁、不生成完整工程、不提供服务端账号或云端学习历史，也不承诺敏感信息遮盖绝对完整。发送前应继续检查预览，并遵守模型服务商的计费、日志、保留和数据使用条款。

@@ -15,6 +15,8 @@ class FileExclusionPolicyTest {
         assertTrue(policy.evaluate(".env").excluded());
         assertTrue(policy.evaluate("config/client.pem").excluded());
         assertTrue(policy.evaluate("CONFIG/CLIENT.PEM").excluded());
+        assertTrue(policy.evaluate("config/local.jks").excluded());
+        assertTrue(policy.evaluate("config/credentials.json").excluded());
         assertTrue(policy.evaluate("build/generated/Secret.java").excluded());
         assertTrue(policy.evaluate("module/target/generated/Dto.java").excluded());
     }

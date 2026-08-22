@@ -5,6 +5,7 @@ import com.codementor.practice.Exercise;
 import com.codementor.practice.ExerciseResult;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -46,6 +47,7 @@ public final class ReviewSession {
     private ReviewStatus status = ReviewStatus.IDLE;
     private ReviewContext context;          // 本次评审的上下文（含指纹）
     private List<Suggestion> suggestions;   // 评审结果（SUCCESS 时有值）
+    private String summary = "";            // 模型对当前可见上下文的整体总结
     private String errorMessage;            // FAILED 时的错误信息
     private String requestId;               // 请求 ID，用于日志追踪
     private String learningReviewId;        // 学习事件关联 ID，结果过期后仍保留
@@ -55,9 +57,12 @@ public final class ReviewSession {
     private final Map<String, FollowUpResult> followUpResults = new HashMap<>();
     private final Map<String, String> followUpRequestIds = new HashMap<>();
     private final Set<String> viewedExplanations = new HashSet<>();
+    private final Set<String> expandedExplanations = new HashSet<>();
+    private final Set<String> expandedExamples = new HashSet<>();
     private List<KnowledgeReminder> knowledgeReminders = List.of();
     private ExerciseResult exerciseResult = ExerciseResult.idle();
     private String exerciseRequestId;
+    private int revealedExerciseHints;
 
     // ---------------- 订阅 ----------------
 
@@ -70,6 +75,8 @@ public final class ReviewSession {
         for (Listener l : listeners) {
             try {
                 l.onSessionChanged(this);
+            } catch (ProcessCanceledException e) {
+                throw e;
             } catch (Exception e) {
                 // 单个监听器出错不影响其他监听器和会话本身
                 LOG.warn("会话监听器回调异常", e);
@@ -86,19 +93,34 @@ public final class ReviewSession {
         this.learningReviewId = requestId;
         this.status = ReviewStatus.REQUESTING;
         this.suggestions = null;
+        this.summary = "";
         this.errorMessage = null;
         clearLearningProgress();
         fireChanged();
     }
 
     /** 请求成功，填入建议列表。迟到的旧响应（requestId 不匹配）直接丢弃。 */
-    public boolean succeed(String requestId, List<Suggestion> suggestions) {
+    public boolean succeed(String requestId, ReviewResult result) {
+        return succeed(requestId, result, requestId);
+    }
+
+    public boolean succeed(
+            String requestId, ReviewResult result, String learningReviewId) {
         if (!isCurrentRequest(requestId)) return false;
-        this.suggestions = List.copyOf(suggestions);
+        this.summary = result.summary();
+        this.suggestions = result.suggestions();
+        if (learningReviewId != null && !learningReviewId.isBlank()) {
+            this.learningReviewId = learningReviewId;
+        }
         this.status = ReviewStatus.SUCCESS;
         this.errorMessage = null;
         fireChanged();
         return true;
+    }
+
+    /** Compatibility helper for tests and local services that do not provide a summary. */
+    public boolean succeed(String requestId, List<Suggestion> suggestions) {
+        return succeed(requestId, new ReviewResult("", suggestions));
     }
 
     /** 请求失败。迟到的旧响应（requestId 不匹配）直接丢弃。 */
@@ -107,6 +129,7 @@ public final class ReviewSession {
         this.status = ReviewStatus.FAILED;
         this.errorMessage = message;
         this.suggestions = null;
+        this.summary = "";
         fireChanged();
     }
 
@@ -125,6 +148,7 @@ public final class ReviewSession {
         this.status = ReviewStatus.IDLE;
         this.context = null;
         this.suggestions = null;
+        this.summary = "";
         this.errorMessage = null;
         this.requestId = null;
         this.learningReviewId = null;
@@ -154,6 +178,17 @@ public final class ReviewSession {
                 suggestionId, verificationRequestId, VerificationResult.failed(message));
     }
 
+    /**
+     * 清除已经不再对应当前文档版本的验证结论，但保留正在进行的验证；后者由
+     * VerificationCoordinator 的文档监听器取消并给出明确失败原因。
+     */
+    public boolean invalidateCompletedVerifications() {
+        boolean changed = verificationResults.entrySet().removeIf(
+                entry -> entry.getValue().getStatus() != VerificationStatus.VERIFYING);
+        if (changed) fireChanged();
+        return changed;
+    }
+
     public boolean setFeedback(String suggestionId, FeedbackType feedbackType) {
         FeedbackType previous = feedback.put(suggestionId, feedbackType);
         if (feedbackType == previous) return false;
@@ -166,9 +201,39 @@ public final class ReviewSession {
         return viewedExplanations.add(suggestionId);
     }
 
-    public void startFollowUp(String suggestionId, String followUpRequestId) {
+    public boolean toggleExplanation(String suggestionId) {
+        boolean expanded;
+        if (expandedExplanations.remove(suggestionId)) {
+            expandedExamples.remove(suggestionId);
+            expanded = false;
+        } else {
+            expandedExplanations.add(suggestionId);
+            expanded = true;
+        }
+        fireChanged();
+        return expanded;
+    }
+
+    public boolean toggleExample(String suggestionId) {
+        if (!expandedExplanations.contains(suggestionId)) return false;
+        boolean expanded = !expandedExamples.remove(suggestionId);
+        if (expanded) expandedExamples.add(suggestionId);
+        fireChanged();
+        return expanded;
+    }
+
+    public boolean isExplanationExpanded(String suggestionId) {
+        return expandedExplanations.contains(suggestionId);
+    }
+
+    public boolean isExampleExpanded(String suggestionId) {
+        return expandedExamples.contains(suggestionId);
+    }
+
+    public void startFollowUp(
+            String suggestionId, String followUpRequestId, String question) {
         followUpRequestIds.put(suggestionId, followUpRequestId);
-        followUpResults.put(suggestionId, FollowUpResult.requesting());
+        followUpResults.put(suggestionId, FollowUpResult.requesting(question));
         fireChanged();
     }
 
@@ -176,9 +241,8 @@ public final class ReviewSession {
             String suggestionId, String followUpRequestId, String answer) {
         if (!isCurrentFollowUp(suggestionId, followUpRequestId)) return false;
         followUpRequestIds.remove(suggestionId);
-        followUpResults.put(
-                suggestionId,
-                new FollowUpResult(FollowUpResult.Status.SUCCESS, answer));
+        String question = getFollowUpResult(suggestionId).getQuestion();
+        followUpResults.put(suggestionId, FollowUpResult.success(question, answer));
         fireChanged();
         return true;
     }
@@ -187,7 +251,19 @@ public final class ReviewSession {
             String suggestionId, String followUpRequestId, String message) {
         if (!isCurrentFollowUp(suggestionId, followUpRequestId)) return false;
         followUpRequestIds.remove(suggestionId);
-        followUpResults.put(suggestionId, FollowUpResult.failed(message));
+        String question = getFollowUpResult(suggestionId).getQuestion();
+        followUpResults.put(suggestionId, FollowUpResult.failed(question, message));
+        fireChanged();
+        return true;
+    }
+
+    public boolean cancelFollowUp(String suggestionId) {
+        if (!followUpRequestIds.containsKey(suggestionId)) return false;
+        followUpRequestIds.remove(suggestionId);
+        String question = getFollowUpResult(suggestionId).getQuestion();
+        followUpResults.put(
+                suggestionId,
+                FollowUpResult.failed(question, "已取消本次追问。"));
         fireChanged();
         return true;
     }
@@ -195,6 +271,7 @@ public final class ReviewSession {
     public void startExercise(String requestId) {
         exerciseRequestId = requestId;
         exerciseResult = ExerciseResult.generating();
+        revealedExerciseHints = 0;
         fireChanged();
     }
 
@@ -202,6 +279,7 @@ public final class ReviewSession {
         if (!isCurrentExercise(requestId)) return false;
         exerciseRequestId = null;
         exerciseResult = ExerciseResult.success(exercise);
+        revealedExerciseHints = 0;
         fireChanged();
         return true;
     }
@@ -210,6 +288,28 @@ public final class ReviewSession {
         if (!isCurrentExercise(requestId)) return false;
         exerciseRequestId = null;
         exerciseResult = ExerciseResult.failed(message);
+        revealedExerciseHints = 0;
+        fireChanged();
+        return true;
+    }
+
+    public void cancelExercise() {
+        if (exerciseResult.getStatus() == ExerciseResult.Status.IDLE) return;
+        exerciseRequestId = null;
+        exerciseResult = ExerciseResult.idle();
+        revealedExerciseHints = 0;
+        fireChanged();
+    }
+
+    /** Reveals one exercise hint at a time so the learner can try before seeing more help. */
+    public boolean revealNextExerciseHint() {
+        Exercise exercise = exerciseResult.getExercise();
+        if (exerciseResult.getStatus() != ExerciseResult.Status.SUCCESS
+                || exercise == null
+                || revealedExerciseHints >= exercise.getHints().size()) {
+            return false;
+        }
+        revealedExerciseHints++;
         fireChanged();
         return true;
     }
@@ -235,7 +335,12 @@ public final class ReviewSession {
         followUpResults.clear();
         followUpRequestIds.clear();
         viewedExplanations.clear();
+        expandedExplanations.clear();
+        expandedExamples.clear();
         knowledgeReminders = List.of();
+        exerciseResult = ExerciseResult.idle();
+        exerciseRequestId = null;
+        revealedExerciseHints = 0;
     }
 
     /** 判断是否是当前正在等待结果的请求。 */
@@ -248,6 +353,7 @@ public final class ReviewSession {
     public ReviewStatus getStatus() { return status; }
     public ReviewContext getContext() { return context; }
     public List<Suggestion> getSuggestions() { return suggestions; }
+    public String getSummary() { return summary; }
     public String getErrorMessage() { return errorMessage; }
     public VerificationResult getVerificationResult(String suggestionId) {
         return verificationResults.getOrDefault(
@@ -260,6 +366,7 @@ public final class ReviewSession {
     }
     public List<KnowledgeReminder> getKnowledgeReminders() { return knowledgeReminders; }
     public ExerciseResult getExerciseResult() { return exerciseResult; }
+    public int getRevealedExerciseHints() { return revealedExerciseHints; }
     public String getLearningReviewId() {
         return learningReviewId == null ? "" : learningReviewId;
     }

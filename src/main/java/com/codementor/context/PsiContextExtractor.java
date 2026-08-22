@@ -6,8 +6,10 @@ import com.codementor.javaweb.JavaWebContext;
 import com.codementor.javaweb.JavaWebContextAnalyzer;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.Document;
+import com.intellij.openapi.progress.ProcessCanceledException;
+import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.project.Project;
-import com.intellij.openapi.vfs.VirtualFile;
+import com.intellij.openapi.util.TextRange;
 import com.intellij.psi.PsiClass;
 import com.intellij.psi.PsiElement;
 import com.intellij.psi.PsiField;
@@ -60,20 +62,34 @@ public final class PsiContextExtractor {
     @Nullable
     public static ReviewContext extract(
             Project project, Editor editor, PsiFile psiFile, Integer preferredOffset) {
+        return extract(project, ContextTarget.capture(editor, preferredOffset), psiFile);
+    }
+
+    /**
+     * Extracts from an immutable target snapshot. Coordinators should prefer this overload so a
+     * later caret/selection movement cannot silently change an already queued request.
+     */
+    @Nullable
+    public static ReviewContext extract(
+            Project project, ContextTarget target, PsiFile psiFile) {
         if (psiFile == null || !(psiFile instanceof PsiJavaFile)) {
             return null;
         }
 
-        Document document = editor.getDocument();
-        String filePath = resolveRelativePath(project, psiFile);
+        Document document = target.document();
+        ProjectFilePath.Result projectFile = ProjectFilePath.resolve(project, psiFile);
 
         // 优先看是否有选中文本
-        String selectedText = editor.getSelectionModel().getSelectedText();
-        boolean hasSelection = preferredOffset == null
-                && selectedText != null
-                && !selectedText.isBlank();
+        boolean hasSelection = target.hasSelection()
+                && target.selectionStart() >= 0
+                && target.selectionEnd() <= document.getTextLength();
+        String selectedText = hasSelection
+                ? document.getText(new TextRange(target.selectionStart(), target.selectionEnd()))
+                : "";
+        hasSelection = !selectedText.isBlank();
 
         String targetName;
+        String targetIdentity;
         String code;
         PsiClass containingClass;
         PsiMethod targetMethod = null;
@@ -84,19 +100,18 @@ public final class PsiContextExtractor {
         int methodEnd = -1;
         if (hasSelection) {
             targetName = "选中代码";
+            targetIdentity = "";
             code = selectedText;
-            int selectionStart = editor.getSelectionModel().getSelectionStart();
+            int selectionStart = target.selectionStart();
             containingClass = PsiTreeUtil.getParentOfType(
                     psiFile.findElementAt(selectionStart), PsiClass.class, false);
             referenceScope = containingClass;
             analysisStart = selectionStart;
-            analysisEnd = editor.getSelectionModel().getSelectionEnd();
+            analysisEnd = target.selectionEnd();
             // 选中模式：methodStart/End 保持 -1，过期检测时"任何改动都视为可能过期"
         } else {
             // 没选中 → 取光标所在的 PsiMethod
-            int offset = preferredOffset != null
-                    ? preferredOffset
-                    : editor.getCaretModel().getOffset();
+            int offset = target.effectiveOffset();
             PsiMethod method = findMethodAt(psiFile, offset);
             if (method == null) {
                 return null; // 光标不在方法内；由 UI 引导用户选中代码或移动光标
@@ -105,8 +120,13 @@ public final class PsiContextExtractor {
             targetMethod = method;
             referenceScope = method;
             String className = containingClass != null ? containingClass.getName() : "?";
-            String methodName = method.getName();
-            targetName = className + "#" + methodName;
+            String parameterTypes = String.join(",", Arrays.stream(
+                            method.getParameterList().getParameters())
+                    .map(parameter -> parameter.getType().getCanonicalText())
+                    .toList());
+            targetName = className + "#" + method.getName()
+                    + "(" + parameterTypes + ")";
+            targetIdentity = methodIdentity(containingClass, method);
             code = method.getText();
             if (code == null || code.isBlank()) {
                 return null;
@@ -138,14 +158,30 @@ public final class PsiContextExtractor {
                 (PsiJavaFile) psiFile, containingClass, targetMethod);
 
         return new ReviewContext(
-                filePath, targetName, code,
+                projectFile.relativePath(), targetName, code,
                 boundedContext.text(), boundedContext.truncated(),
                 stamp, fingerprint,
                 methodStart, methodEnd,
                 javaWebContext, "",
                 ReviewMode.REVIEW,
                 technologyTags,
-                diagnostics);
+                diagnostics,
+                projectFile.insideProject())
+                .withTargetIdentity(targetIdentity);
+    }
+
+    private static String methodIdentity(PsiClass containingClass, PsiMethod method) {
+        if (containingClass == null || method == null) return "";
+        String owner = containingClass.getQualifiedName();
+        if (owner == null || owner.isBlank()) owner = containingClass.getName();
+        if (owner == null || owner.isBlank()) owner = "?";
+        PsiMethod[] methods = containingClass.getMethods();
+        for (int index = 0; index < methods.length; index++) {
+            if (methods[index].isEquivalentTo(method)) {
+                return owner + "#method-index-" + index;
+            }
+        }
+        return owner + "#method-offset-" + method.getTextOffset();
     }
 
     private static PsiMethod findMethodAt(PsiFile psiFile, int requestedOffset) {
@@ -159,22 +195,6 @@ public final class PsiContextExtractor {
                     psiFile.findElementAt(offset - 1), PsiMethod.class, false);
         }
         return method;
-    }
-
-    /**
-     * 取相对项目根的路径（如 "src/main/java/com/demo/UserController.java"），
-     * 供日志和学习记录使用（方案第 8 节）。
-     * 项目外文件只返回文件名——不把本机绝对路径写进日志/记录，避免泄漏目录结构（方案第 11 节）。
-     */
-    private static String resolveRelativePath(Project project, PsiFile psiFile) {
-        VirtualFile vFile = psiFile.getVirtualFile();
-        if (vFile == null) return psiFile.getName();
-        String base = project.getBasePath();
-        String path = vFile.getPath();
-        if (base != null && path.startsWith(base + "/")) {
-            return path.substring(base.length() + 1);
-        }
-        return vFile.getName();
     }
 
     /**
@@ -231,6 +251,7 @@ public final class PsiContextExtractor {
         for (PsiReferenceExpression expression :
                 PsiTreeUtil.findChildrenOfType(
                         referenceScope, PsiReferenceExpression.class)) {
+            ProgressManager.checkCanceled();
             int offset = expression.getTextRange().getStartOffset();
             if (offset < analysisStart || offset >= analysisEnd) continue;
             try {
@@ -239,6 +260,8 @@ public final class PsiContextExtractor {
                         && field.getContainingClass() == containingClass) {
                     referenced.add(field);
                 }
+            } catch (ProcessCanceledException e) {
+                throw e;
             } catch (RuntimeException ignored) {
                 // Dumb mode 或索引刷新时无法解析某个引用；其余上下文仍可使用。
             }

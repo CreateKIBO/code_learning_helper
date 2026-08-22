@@ -1,8 +1,13 @@
 package com.codementor.review;
 
 import com.codementor.CodeMentorService;
+import com.codementor.context.ContextTarget;
 import com.codementor.context.PsiContextExtractor;
 import com.codementor.history.LearningHistoryService;
+import com.codementor.model.ModelRequestConfig;
+import com.codementor.model.PrivacyFilter;
+import com.codementor.privacy.OutboundRequestGuard;
+import com.codementor.settings.CodeMentorSettings;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
@@ -10,7 +15,6 @@ import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
-import com.intellij.openapi.editor.RangeMarker;
 import com.intellij.openapi.editor.event.DocumentEvent;
 import com.intellij.openapi.editor.event.DocumentListener;
 import com.intellij.openapi.fileEditor.FileEditorManager;
@@ -24,8 +28,9 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.Future;
 
-/** 协调“重新读取代码 → 调模型验证 → 更新会话 → 写学习记录”的完整流程。 */
+/** Re-reads the original target and verifies one suggestion without mixing review generations. */
 @Service(Service.Level.PROJECT)
 public final class VerificationCoordinator implements Disposable {
 
@@ -40,110 +45,137 @@ public final class VerificationCoordinator implements Disposable {
         return project.getService(VerificationCoordinator.class);
     }
 
-    /**
-     * 从当前编辑器重新采集代码并验证指定建议。该方法应由 EDT 上的 UI 操作调用。
-     */
+    /** Called from the EDT by a suggestion card. */
     public void verify(Suggestion suggestion) {
         ReviewSession session = ReviewSession.getInstance(project);
         ReviewContext originalContext = session.getContext();
-        if (originalContext == null) {
+        if (originalContext == null) return;
+        if (originalContext.getMethodStart() < 0) {
+            failImmediately(
+                    session,
+                    suggestion,
+                    "选中代码暂不支持修改验证；请把光标放在完整方法内重新评审。");
             return;
         }
 
-        String verificationRequestId = UUID.randomUUID().toString().substring(0, 8);
-        cancelPending(suggestion.getId(), "已开始新的修改验证。");
-        session.startVerification(suggestion.getId(), verificationRequestId);
+        final ModelRequestConfig config;
+        try {
+            config = ModelRequestConfig.capture(CodeMentorSettings.getInstance());
+        } catch (IllegalArgumentException e) {
+            failImmediately(session, suggestion, e.getMessage());
+            return;
+        }
+        OutboundRequestGuard.Decision outbound =
+                OutboundRequestGuard.getInstance(project).evaluate(config, originalContext);
+        if (!outbound.allowed()) {
+            failImmediately(session, suggestion, outbound.reason());
+            return;
+        }
 
         Editor editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
-        if (editor == null) {
-            session.failVerification(
-                    suggestion.getId(), verificationRequestId, "请先打开原来评审的 Java 文件。");
+        if (editor == null || editor.isDisposed()) {
+            failImmediately(session, suggestion, "请先打开原来评审的 Java 文件。");
             return;
         }
-        PsiFile psiFile = PsiDocumentManager.getInstance(project).getPsiFile(editor.getDocument());
+        PsiFile psiFile = PsiDocumentManager.getInstance(project)
+                .getPsiFile(editor.getDocument());
         if (psiFile == null) {
-            session.failVerification(
-                    suggestion.getId(), verificationRequestId, "当前编辑器不是可分析的 Java 文件。");
+            failImmediately(session, suggestion, "当前编辑器不是可分析的 Java 文件。");
             return;
         }
 
-        ReadAction.<ReviewContext>nonBlocking(
-                        () -> PsiContextExtractor.extract(project, editor, psiFile))
+        cancelPending(suggestion.getId(), "已开始新的修改验证。");
+        String requestId = UUID.randomUUID().toString();
+        String learningReviewId = session.getLearningReviewId();
+        session.startVerification(suggestion.getId(), requestId);
+
+        ContextTarget target = ReviewCoordinator.getInstance(project)
+                .captureVerificationTarget(editor, originalContext);
+        if (target == null) {
+            failImmediately(
+                    session,
+                    suggestion,
+                    "无法安全定位原来评审的方法；它可能已被删除，请重新评审。");
+            return;
+        }
+        long initialStamp = target.document().getModificationStamp();
+        PendingVerification verification = new PendingVerification(
+                target.document(),
+                session,
+                suggestion.getId(),
+                requestId,
+                originalContext,
+                learningReviewId);
+        pending.put(suggestion.getId(), verification);
+
+        Future<?> collection = ReadAction.<ReviewContext>nonBlocking(
+                        () -> PsiContextExtractor.extract(project, target, psiFile))
+                .withDocumentsCommitted(project)
                 .coalesceBy(this, suggestion.getId())
                 .expireWith(project)
                 .finishOnUiThread(
                         ModalityState.defaultModalityState(),
                         currentContext -> onContextCollected(
-                                editor.getDocument(),
-                                originalContext,
+                                verification,
                                 currentContext,
                                 suggestion,
-                                verificationRequestId))
+                                config,
+                                initialStamp))
                 .submit(AppExecutorUtil.getAppExecutorService());
+        verification.setCollection(collection);
     }
 
-    private void onContextCollected(Document document,
-                                    ReviewContext originalContext,
-                                    ReviewContext currentContext,
-                                    Suggestion suggestion,
-                                    String verificationRequestId) {
-        ReviewSession session = ReviewSession.getInstance(project);
-        if (currentContext == null
-                || !originalContext.getFilePath().equals(currentContext.getFilePath())
-                || !originalContext.getTargetName().equals(currentContext.getTargetName())) {
-            session.failVerification(
-                    suggestion.getId(),
-                    verificationRequestId,
-                    "请把光标放回原来评审的方法，再点击验证。");
+    private void onContextCollected(
+            PendingVerification verification,
+            ReviewContext currentContext,
+            Suggestion suggestion,
+            ModelRequestConfig config,
+            long initialStamp) {
+        if (!isPending(verification) || !verification.isSameReview()) return;
+        verification.clearCollection();
+        if (verification.document.getModificationStamp() != initialStamp) {
+            verification.cancel("采集期间代码再次变化，请停止输入后重试。");
             return;
         }
-        if (originalContext.getFingerprint().equals(currentContext.getFingerprint())) {
-            session.failVerification(
-                    suggestion.getId(),
-                    verificationRequestId,
-                    "代码尚未变化，请先根据提示完成修改。");
+        ReviewContext originalContext = verification.originalContext;
+        if (!ReviewCoordinator.getInstance(project).matchesVerificationTarget(
+                originalContext, currentContext)) {
+            verification.cancel("请把光标放回原来评审的方法，再点击验证。");
             return;
         }
-        if (document.getModificationStamp() != currentContext.getDocumentStamp()) {
-            session.failVerification(
-                    suggestion.getId(),
-                    verificationRequestId,
-                    "采集后代码再次变化，请停止输入后重试。");
+        if (!hasVerificationInputChanged(originalContext, currentContext)) {
+            verification.cancel("代码尚未变化，请先根据提示完成修改。");
+            return;
+        }
+        OutboundRequestGuard.Decision outbound =
+                OutboundRequestGuard.getInstance(project).evaluate(config, currentContext);
+        if (!outbound.allowed()) {
+            verification.cancel(outbound.reason());
             return;
         }
 
+        verification.attach();
         VerificationRequest request =
                 new VerificationRequest(originalContext, currentContext, suggestion);
-        PendingVerification pendingVerification = new PendingVerification(
-                document, session, suggestion.getId(), verificationRequestId, currentContext);
-        pending.put(suggestion.getId(), pendingVerification);
-        pendingVerification.attach();
-        CancellableRequest requestHandle =
-                CodeMentorService.getInstance().getReviewService().verify(
+        CancellableRequest handle = CodeMentorService.getInstance().getReviewService().verify(
+                config,
                 request,
-                verificationRequestId,
+                verification.requestId,
                 new ReviewService.VerificationCallback() {
                     @Override
                     public void onSuccess(VerificationResult result) {
                         ApplicationManager.getApplication().invokeLater(() -> {
-                            if (!finishPending(suggestion.getId(), pendingVerification)) {
+                            if (!finishPending(verification) || !verification.isSameReview()) {
                                 return;
                             }
-                            if (document.getModificationStamp() != currentContext.getDocumentStamp()) {
-                                session.failVerification(
-                                        suggestion.getId(),
-                                        verificationRequestId,
-                                        "验证期间代码再次变化，请重新验证。");
-                                return;
-                            }
-                            if (session.completeVerification(
-                                    suggestion.getId(), verificationRequestId, result)) {
+                            if (verification.session.completeVerification(
+                                    suggestion.getId(), verification.requestId, result)) {
                                 LearningHistoryService.getInstance().recordVerification(
                                         project,
                                         originalContext,
                                         suggestion,
                                         result,
-                                        session.getLearningReviewId());
+                                        verification.learningReviewId);
                             }
                         });
                     }
@@ -151,40 +183,69 @@ public final class VerificationCoordinator implements Disposable {
                     @Override
                     public void onFailure(String errorMessage) {
                         ApplicationManager.getApplication().invokeLater(() -> {
-                            if (!finishPending(suggestion.getId(), pendingVerification)) {
+                            if (!finishPending(verification) || !verification.isSameReview()) {
                                 return;
                             }
-                            session.failVerification(
-                                    suggestion.getId(), verificationRequestId, errorMessage);
+                            verification.session.failVerification(
+                                    suggestion.getId(), verification.requestId, errorMessage);
                         });
                     }
                 });
-        pendingVerification.setRequest(requestHandle);
+        verification.setRequest(handle);
+    }
+
+    static boolean isSameTarget(
+            ReviewContext originalContext, ReviewContext currentContext) {
+        return originalContext != null
+                && currentContext != null
+                && originalContext.getMethodStart() >= 0
+                && currentContext.getMethodStart() >= 0
+                && originalContext.getFilePath().equals(currentContext.getFilePath())
+                && !originalContext.getTargetIdentity().isBlank()
+                && originalContext.getTargetIdentity().equals(
+                        currentContext.getTargetIdentity());
+    }
+
+    static boolean hasVerificationInputChanged(
+            ReviewContext originalContext, ReviewContext currentContext) {
+        return originalContext != null
+                && currentContext != null
+                && !PrivacyFilter.mask(originalContext.getModelContext()).equals(
+                        PrivacyFilter.mask(currentContext.getModelContext()));
+    }
+
+    private static void failImmediately(
+            ReviewSession session, Suggestion suggestion, String message) {
+        String requestId = UUID.randomUUID().toString();
+        session.startVerification(suggestion.getId(), requestId);
+        session.failVerification(suggestion.getId(), requestId, message);
+    }
+
+    private boolean isPending(PendingVerification verification) {
+        return pending.get(verification.suggestionId) == verification;
     }
 
     private void cancelPending(String suggestionId, String message) {
         PendingVerification existing = pending.remove(suggestionId);
-        if (existing != null) {
-            existing.cancel(message);
-        }
+        if (existing != null) existing.cancel(message);
     }
 
-    private boolean finishPending(
-            String suggestionId, PendingVerification expected) {
-        if (pending.get(suggestionId) != expected) {
-            return false;
-        }
-        pending.remove(suggestionId);
+    private boolean finishPending(PendingVerification expected) {
+        if (!pending.remove(expected.suggestionId, expected)) return false;
         expected.close();
         return true;
     }
 
-    @Override
-    public void dispose() {
+    public void cancelAll(String message) {
         for (PendingVerification verification : new ArrayList<>(pending.values())) {
-            verification.cancel("项目已关闭。");
+            verification.cancel(message);
         }
         pending.clear();
+    }
+
+    @Override
+    public void dispose() {
+        cancelAll("项目已关闭。");
     }
 
     private final class PendingVerification implements DocumentListener {
@@ -192,82 +253,79 @@ public final class VerificationCoordinator implements Disposable {
         private final ReviewSession session;
         private final String suggestionId;
         private final String requestId;
-        private CancellableRequest request;
-        private boolean closed;
-        /**
-         * 目标方法的活体范围（与 {@link ExpiryWatcher} 同思路）。
-         * 验证期间只有改到这个方法范围内才算"代码又变了"，改别处不误判（P1-4）。
-         * 选中模式（范围 -1）时为 null，退化为"任意改动都取消"。
-         */
-        private RangeMarker methodRange;
+        private final ReviewContext originalContext;
+        private final String learningReviewId;
 
-        private PendingVerification(Document document,
-                                    ReviewSession session,
-                                    String suggestionId,
-                                    String requestId,
-                                    ReviewContext currentContext) {
+        private Future<?> collection;
+        private CancellableRequest request;
+        private boolean attached;
+        private boolean closed;
+
+        private PendingVerification(
+                Document document,
+                ReviewSession session,
+                String suggestionId,
+                String requestId,
+                ReviewContext originalContext,
+                String learningReviewId) {
             this.document = document;
             this.session = session;
             this.suggestionId = suggestionId;
             this.requestId = requestId;
-            if (currentContext != null
-                    && currentContext.getMethodStart() >= 0
-                    && currentContext.getMethodEnd() > currentContext.getMethodStart()) {
-                methodRange = document.createRangeMarker(
-                        currentContext.getMethodStart(), currentContext.getMethodEnd(), true);
-            }
+            this.originalContext = originalContext;
+            this.learningReviewId = learningReviewId;
+        }
+
+        private boolean isSameReview() {
+            return session.getContext() == originalContext
+                    && learningReviewId.equals(session.getLearningReviewId());
+        }
+
+        private void setCollection(Future<?> future) {
+            collection = future;
+            if (closed) future.cancel(true);
+        }
+
+        private void clearCollection() {
+            collection = null;
         }
 
         private void attach() {
             document.addDocumentListener(this);
+            attached = true;
         }
 
         private void setRequest(CancellableRequest request) {
             this.request = request;
-            if (closed) {
-                request.cancel();
-            }
+            if (closed) request.cancel();
         }
 
         @Override
         public void beforeDocumentChange(@NotNull DocumentEvent event) {
-            // 只在改动触及目标方法范围时才取消验证；改别处不打扰（P1-4）。
-            if (affectsMethodRange(event)) {
-                cancel("验证期间代码再次变化，请停止输入后重试。");
-            }
-        }
-
-        /** 改动是否触及目标方法范围。无 marker（选中模式）时保守认为触及。 */
-        private boolean affectsMethodRange(DocumentEvent event) {
-            if (methodRange == null || !methodRange.isValid()) {
-                return true;
-            }
-            int start = methodRange.getStartOffset();
-            int end = methodRange.getEndOffset();
-            int offset = event.getOffset();
-            if (event.getOldLength() == 0) {
-                return offset >= start && offset <= end;
-            }
-            return offset < end && offset + event.getOldLength() > start;
+            cancel("验证期间当前文件再次变化，请停止输入后重试。");
         }
 
         private void cancel(String message) {
             if (closed) return;
             pending.remove(suggestionId, this);
             close();
-            if (request != null) {
-                request.cancel();
-            }
             session.failVerification(suggestionId, requestId, message);
         }
 
         private void close() {
             if (closed) return;
             closed = true;
-            document.removeDocumentListener(this);
-            if (methodRange != null) {
-                methodRange.dispose();
-                methodRange = null;
+            if (collection != null) {
+                collection.cancel(true);
+                collection = null;
+            }
+            if (request != null) {
+                request.cancel();
+                request = null;
+            }
+            if (attached) {
+                document.removeDocumentListener(this);
+                attached = false;
             }
         }
     }

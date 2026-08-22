@@ -7,22 +7,22 @@ import com.codementor.settings.CodeMentorSettings;
 public final class ExerciseRequest {
 
     private final String knowledgePoint;
-    private final int recentOccurrences;
+    private final int reviewOccurrences;
     private final CodeMentorSettings.TeachingLevel teachingLevel;
     private final JavaWebRole javaWebRole;
 
     public ExerciseRequest(String knowledgePoint,
-                           int recentOccurrences,
+                           int reviewOccurrences,
                            CodeMentorSettings.TeachingLevel teachingLevel,
                            JavaWebRole javaWebRole) {
         this.knowledgePoint = knowledgePoint;
-        this.recentOccurrences = recentOccurrences;
+        this.reviewOccurrences = reviewOccurrences;
         this.teachingLevel = teachingLevel;
         this.javaWebRole = javaWebRole;
     }
 
     public String getKnowledgePoint() { return knowledgePoint; }
-    public int getRecentOccurrences() { return recentOccurrences; }
+    public int getReviewOccurrences() { return reviewOccurrences; }
     public CodeMentorSettings.TeachingLevel getTeachingLevel() { return teachingLevel; }
     public JavaWebRole getJavaWebRole() { return javaWebRole; }
 }

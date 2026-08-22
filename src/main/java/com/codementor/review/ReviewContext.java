@@ -22,10 +22,18 @@ import java.util.List;
  */
 public final class ReviewContext {
 
+    private static final int MAX_STORED_CODE_CHARS = 16_000;
+    private static final String STORED_CODE_TRUNCATION_MARKER =
+            "\n/* CodeMentor: target middle omitted */\n";
+
     /** 相对文件路径，用于日志和学习记录（方案第 8 节）。 */
     private final String filePath;
-    /** 评审目标的展示名，如 "UserController#login" 或 "选中代码"。 */
+    /** 文件是否位于当前项目根目录内；项目外文件禁止发送。 */
+    private final boolean insideProject;
+    /** 评审目标的展示名，如 "UserController#login(LoginDto)" 或 "选中代码"。 */
     private final String targetName;
+    /** 用于验证同一 PSI 方法的内部身份；与可修改的方法签名分离。 */
+    private final String targetIdentity;
     /** 实际要评审的代码文本。 */
     private final String code;
     /** 发送给模型的有界上下文：包/imports/类摘要/字段/目标代码。 */
@@ -85,9 +93,42 @@ public final class ReviewContext {
                          ReviewMode reviewMode,
                          List<String> technologyTags,
                          List<String> diagnostics) {
+        this(filePath, targetName, code, modelContext, truncated,
+                documentStamp, fingerprint, methodStart, methodEnd,
+                javaWebContext, projectRules, reviewMode,
+                technologyTags, diagnostics, true);
+    }
+
+    public ReviewContext(String filePath, String targetName, String code,
+                         String modelContext, boolean truncated,
+                         long documentStamp, String fingerprint,
+                         int methodStart, int methodEnd,
+                         JavaWebContext javaWebContext, String projectRules,
+                         ReviewMode reviewMode,
+                         List<String> technologyTags,
+                         List<String> diagnostics,
+                         boolean insideProject) {
+        this(filePath, targetName, code, modelContext, truncated,
+                documentStamp, fingerprint, methodStart, methodEnd,
+                javaWebContext, projectRules, reviewMode,
+                technologyTags, diagnostics, insideProject, targetName);
+    }
+
+    private ReviewContext(String filePath, String targetName, String code,
+                          String modelContext, boolean truncated,
+                          long documentStamp, String fingerprint,
+                          int methodStart, int methodEnd,
+                          JavaWebContext javaWebContext, String projectRules,
+                          ReviewMode reviewMode,
+                          List<String> technologyTags,
+                          List<String> diagnostics,
+                          boolean insideProject,
+                          String targetIdentity) {
         this.filePath = filePath;
+        this.insideProject = insideProject;
         this.targetName = targetName;
-        this.code = code;
+        this.targetIdentity = targetIdentity == null ? "" : targetIdentity;
+        this.code = boundedCode(code);
         this.modelContext = modelContext;
         this.truncated = truncated;
         this.documentStamp = documentStamp;
@@ -99,26 +140,40 @@ public final class ReviewContext {
                 : javaWebContext;
         this.projectRules = projectRules == null ? "" : projectRules;
         this.reviewMode = reviewMode == null ? ReviewMode.REVIEW : reviewMode;
-        this.technologyTags = List.copyOf(technologyTags);
-        this.diagnostics = List.copyOf(diagnostics);
+        this.technologyTags = technologyTags == null
+                ? List.of()
+                : List.copyOf(technologyTags);
+        this.diagnostics = diagnostics == null ? List.of() : List.copyOf(diagnostics);
     }
 
     public ReviewContext withProjectRules(String rules) {
         return new ReviewContext(
                 filePath, targetName, code, modelContext, truncated,
                 documentStamp, fingerprint, methodStart, methodEnd,
-                javaWebContext, rules, reviewMode, technologyTags, diagnostics);
+                javaWebContext, rules, reviewMode, technologyTags, diagnostics,
+                insideProject, targetIdentity);
     }
 
     public ReviewContext withReviewMode(ReviewMode mode) {
         return new ReviewContext(
                 filePath, targetName, code, modelContext, truncated,
                 documentStamp, fingerprint, methodStart, methodEnd,
-                javaWebContext, projectRules, mode, technologyTags, diagnostics);
+                javaWebContext, projectRules, mode, technologyTags, diagnostics,
+                insideProject, targetIdentity);
+    }
+
+    public ReviewContext withTargetIdentity(String identity) {
+        return new ReviewContext(
+                filePath, targetName, code, modelContext, truncated,
+                documentStamp, fingerprint, methodStart, methodEnd,
+                javaWebContext, projectRules, reviewMode, technologyTags, diagnostics,
+                insideProject, identity);
     }
 
     public String getFilePath() { return filePath; }
+    public boolean isInsideProject() { return insideProject; }
     public String getTargetName() { return targetName; }
+    public String getTargetIdentity() { return targetIdentity; }
     public String getCode() { return code; }
     public String getModelContext() { return modelContext; }
     public boolean isTruncated() { return truncated; }
@@ -131,4 +186,15 @@ public final class ReviewContext {
     public ReviewMode getReviewMode() { return reviewMode; }
     public List<String> getTechnologyTags() { return technologyTags; }
     public List<String> getDiagnostics() { return diagnostics; }
+
+    private static String boundedCode(String value) {
+        if (value == null) return "";
+        if (value.length() <= MAX_STORED_CODE_CHARS) return value;
+        int budget = MAX_STORED_CODE_CHARS - STORED_CODE_TRUNCATION_MARKER.length();
+        int headBudget = budget * 2 / 3;
+        int tailBudget = budget - headBudget;
+        return value.substring(0, headBudget)
+                + STORED_CODE_TRUNCATION_MARKER
+                + value.substring(value.length() - tailBudget);
+    }
 }

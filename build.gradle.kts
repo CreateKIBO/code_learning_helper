@@ -19,12 +19,9 @@ java {
     targetCompatibility = JavaVersion.VERSION_17
 }
 
-// ---- 仓库 ----
-// 注意：2.x 要求 IntelliJ Platform 专用仓库用 intellijPlatform { ... } 块声明
+// ---- 官方仓库 ----
+// IntelliJ Platform 2.x 的专用仓库必须通过 intellijPlatform { ... } 声明。
 repositories {
-    // 阿里云镜像放最前，加速国内下载（mavenCentral 内容）
-    maven { url = uri("https://maven.aliyun.com/repository/public") }
-    maven { url = uri("https://maven.aliyun.com/repository/gradle-plugin") }
     mavenCentral()
 
     intellijPlatform {
@@ -63,6 +60,18 @@ intellijPlatform {
     pluginConfiguration {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
+        changeNotes = """
+            <h3>1.2.0 — 2026-08-22</h3>
+            <ul>
+                <li>Redesigned the tool window with direct empty-state actions, explicit review, follow-up, and exercise cancellation, retry and settings recovery, a compact More menu, wrapped learning content, and preserved card expansion and scroll state.</li>
+                <li>Made the learning loop more progressive: each grounded suggestion now includes a smallest next step and a self-check question, follow-ups show the learner's question, and exercise hints are revealed one at a time.</li>
+                <li>Added structured review summaries, including a useful no-suggestions state, and separate teaching guidance and labels for review versus explanation across Beginner, Intermediate, and JavaWeb levels.</li>
+                <li>Rejects results unless whitespace-equivalent evidence is present in both the masked request context and masked target source; verification evidence must also come from the current target source.</li>
+                <li>Weak-knowledge reminders count reliable distinct review IDs, merge spelling variants, and exclude resolved, verifying, false-positive, and low-confidence suggestions; legacy records without a reliable ID remain available for statistics but do not drive repeated reminders.</li>
+                <li>Manual reviews take priority over delayed save reviews, cached reviews preserve their original learning identity, and a live full-method anchor prevents modification verification from switching targets; whole-document replacement or external reload invalidates that anchor.</li>
+                <li>Follow-up question and answer text remains only in the current in-memory session and is not written to learning history.</li>
+            </ul>
+        """.trimIndent()
 
         ideaVersion {
             // 仅支持 2024.1.x（241.*），不跨大版本（个人本地工具，按需收窄）
@@ -71,21 +80,32 @@ intellijPlatform {
         }
     }
 
-    // 构建校验：当前不发布，关掉避免缺网络/版本时构建失败
     pluginVerification {
-        // 占位：发布前再启用 Plugin Verifier
+        ides {
+            current()
+        }
     }
 }
 
 tasks {
-    // 禁用 2.x 默认开启但本项目不用的可选任务，避免构建警告
-    val verifyPlugin by getting { /* 默认即可 */ }
-
-    withType<JavaCompile> {
+    withType<JavaCompile>().configureEach {
         options.encoding = "UTF-8"
         // 生成插件时使用平台 JDK 17
         sourceCompatibility = "17"
         targetCompatibility = "17"
+    }
+
+    processResources {
+        // 让离线安装包自身携带发布与隐私条款，而不是只依赖仓库页面。
+        from(rootProject.file("LICENSE")) {
+            into("META-INF")
+        }
+        from(rootProject.file("NOTICE")) {
+            into("META-INF")
+        }
+        from(rootProject.file("PRIVACY.md")) {
+            into("META-INF")
+        }
     }
 
     test {

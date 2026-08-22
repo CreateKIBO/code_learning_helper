@@ -1,63 +1,63 @@
 package com.codementor.settings;
 
+import com.codementor.model.ModelEndpointValidator;
+import com.codementor.model.ZhiPuModelClient;
+import com.codementor.review.ReviewCoordinator;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
 import com.intellij.openapi.progress.ProgressIndicator;
 import com.intellij.openapi.progress.ProgressManager;
 import com.intellij.openapi.progress.Task;
+import com.intellij.openapi.project.Project;
+import com.intellij.openapi.project.ProjectManager;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.ui.components.JBCheckBox;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBPanel;
-import com.intellij.ui.components.JBTextField;
 import com.intellij.ui.components.JBTextArea;
+import com.intellij.ui.components.JBTextField;
+import com.intellij.ui.JBColor;
+import com.intellij.util.concurrency.AppExecutorUtil;
 import org.jetbrains.annotations.Nls;
 import org.jetbrains.annotations.Nullable;
 
-import javax.swing.*;
-import java.awt.*;
-import java.util.concurrent.CompletableFuture;
+import javax.swing.JButton;
+import javax.swing.JComboBox;
+import javax.swing.JComponent;
+import javax.swing.JPanel;
+import javax.swing.JPasswordField;
+import javax.swing.JScrollPane;
+import java.awt.GridBagConstraints;
+import java.awt.GridBagLayout;
+import java.awt.Insets;
+import java.util.Arrays;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * CodeMentor 设置页（方案第 12 节）。
- *
- * <p>在 IDE 设置 → Tools → CodeMentor 注册（plugin.xml 的 applicationConfigurable）。
- * 配置项：
- * <ul>
- *   <li>API Key：密文输入框，存 {@link ApiKeyStore}（PasswordSafe），不进 State 明文文件</li>
- *   <li>API 地址：默认智谱，可改成自建代理或其他兼容服务</li>
- *   <li>模型：预设下拉（glm-4-plus 等），也可自定义</li>
- *   <li>教学级别：初学 / 进阶 / JavaWeb（方案第 10 节）</li>
- *   <li>评审开关</li>
- *   <li>「测试连接」按钮：发个最小请求验证配置</li>
- * </ul>
- *
- * <p>实现 {@link Configurable}：createComponent 建面板，isModified 判断是否改动，
- * apply 保存。API Key 的读写因走 PasswordSafe（阻塞）必须放后台线程，用
- * CompletableFuture 异步化，避免卡 EDT。
- */
-public class CodeMentorConfigurable implements Configurable {
+/** Settings → Tools → CodeMentor. Secrets are never refilled into the password field. */
+public final class CodeMentorConfigurable implements Configurable {
 
     private JPasswordField apiKeyField;
+    private JBLabel apiKeyStatusLabel;
+    private JBCheckBox clearApiKeyCheckBox;
     private JBTextField apiUrlField;
     private JBTextField modelField;
     private JComboBox<CodeMentorSettings.TeachingLevel> levelCombo;
     private JBCheckBox enableReviewCheckBox;
     private JBCheckBox enableSaveReviewCheckBox;
     private JBCheckBox previewEveryRequestCheckBox;
+    private JBCheckBox allowInsecureLocalEndpointCheckBox;
     private JBTextArea excludedPatternsArea;
     private JButton testConnectionButton;
+    private JBLabel connectionStatusLabel;
 
-    // 记录打开设置页时从 PasswordSafe 读到的 Key（用于 isModified 比较）
-    private volatile String originalApiKey;
-    /**
-     * PasswordSafe 写入代际：每次 apply 写 Key 时 +1，写完后再 +1。
-     * reset 的异步读会检查这个值——若读期间发现有"已发起但未完成"的写入，
-     * 就跳过本次读取，避免读到旧值（P0-A 竞态修复）。
-     */
-    private final AtomicLong writeGeneration = new AtomicLong(0);
+    private final AtomicLong apiKeyStatusGeneration = new AtomicLong();
+    private final AtomicLong connectionGeneration = new AtomicLong();
+    private Future<?> apiKeyStatusFuture;
+    private Future<?> connectionTestFuture;
+    private volatile boolean disposed;
 
     @Override
     public @Nls(capitalization = Nls.Capitalization.Title) String getDisplayName() {
@@ -66,210 +66,395 @@ public class CodeMentorConfigurable implements Configurable {
 
     @Override
     public @Nullable JComponent createComponent() {
+        disposed = false;
         JPanel panel = new JBPanel<>(new GridBagLayout());
-        GridBagConstraints gbc = new GridBagConstraints();
-        gbc.anchor = GridBagConstraints.WEST;
-        gbc.insets = new Insets(4, 4, 4, 4);
-        gbc.gridx = 0;
-        gbc.gridy = 0;
-        gbc.fill = GridBagConstraints.NONE;
+        GridBagConstraints gbc = constraints();
 
-        // ---- API Key ----
-        panel.add(new JBLabel("API Key："), gbc);
-        gbc.gridx = 1;
-        gbc.weightx = 1;
-        gbc.fill = GridBagConstraints.HORIZONTAL;
+        addLabel(panel, gbc, 0, "API Key：");
         apiKeyField = new JPasswordField();
-        apiKeyField.setToolTipText("从智谱开放平台 bigmodel.cn 获取。安全存储于系统钥匙串，不明文落盘。");
-        panel.add(apiKeyField, gbc);
+        apiKeyField.setToolTipText("留空表示不修改；API Key 仅保存到 IntelliJ PasswordSafe。");
+        apiKeyField.getAccessibleContext().setAccessibleName("CodeMentor API Key");
+        addWide(panel, gbc, 0, apiKeyField);
 
-        // ---- API 地址 ----
-        gbc.gridx = 0; gbc.gridy = 1; gbc.weightx = 0; gbc.fill = GridBagConstraints.NONE;
-        panel.add(new JBLabel("API 地址："), gbc);
-        gbc.gridx = 1; gbc.weightx = 1; gbc.fill = GridBagConstraints.HORIZONTAL;
+        apiKeyStatusLabel = new JBLabel("正在检查已保存的 API Key…");
+        addWide(panel, gbc, 1, apiKeyStatusLabel);
+        clearApiKeyCheckBox = new JBCheckBox("删除 PasswordSafe 中已保存的 API Key");
+        clearApiKeyCheckBox.addActionListener(event -> {
+            boolean deleting = clearApiKeyCheckBox.isSelected();
+            if (deleting) {
+                apiKeyField.setText("");
+                cancelConnectionTest();
+            }
+            apiKeyField.setEnabled(!deleting);
+            testConnectionButton.setEnabled(!deleting);
+        });
+        addWide(panel, gbc, 2, clearApiKeyCheckBox);
+
+        addLabel(panel, gbc, 3, "API 地址：");
         apiUrlField = new JBTextField();
-        apiUrlField.setToolTipText("默认智谱官方端点。可改为自建代理。");
-        panel.add(apiUrlField, gbc);
+        apiUrlField.setToolTipText("默认使用智谱官方 HTTPS 端点；更换地址后需重新授权当前项目。");
+        addWide(panel, gbc, 3, apiUrlField);
 
-        // ---- 模型 ----
-        gbc.gridx = 0; gbc.gridy = 2; gbc.weightx = 0; gbc.fill = GridBagConstraints.NONE;
-        panel.add(new JBLabel("模型："), gbc);
-        gbc.gridx = 1; gbc.weightx = 1; gbc.fill = GridBagConstraints.HORIZONTAL;
+        addLabel(panel, gbc, 4, "模型：");
         modelField = new JBTextField();
-        modelField.setToolTipText("如 glm-4-plus、glm-4-flash。可手动输入其他兼容模型名。");
-        panel.add(modelField, gbc);
+        modelField.setToolTipText("默认 glm-5.2，也可填写端点支持的兼容模型名。");
+        addWide(panel, gbc, 4, modelField);
 
-        // ---- 教学级别 ----
-        gbc.gridx = 0; gbc.gridy = 3; gbc.weightx = 0; gbc.fill = GridBagConstraints.NONE;
-        panel.add(new JBLabel("教学级别："), gbc);
-        gbc.gridx = 1; gbc.weightx = 1; gbc.fill = GridBagConstraints.HORIZONTAL;
+        addLabel(panel, gbc, 5, "教学级别：");
         levelCombo = new JComboBox<>(CodeMentorSettings.TeachingLevel.values());
-        panel.add(levelCombo, gbc);
+        addWide(panel, gbc, 5, levelCombo);
 
-        // ---- 开关 ----
-        gbc.gridx = 0; gbc.gridy = 4; gbc.gridwidth = 2; gbc.weightx = 0;
-        enableReviewCheckBox = new JBCheckBox("启用导师评审（取消勾选则 Alt+M 不触发评审）");
-        panel.add(enableReviewCheckBox, gbc);
-
-        gbc.gridy = 5;
+        enableReviewCheckBox = new JBCheckBox("启用 CodeMentor 评审与学习功能");
+        enableReviewCheckBox.addActionListener(event -> updateDependentControls());
+        addWide(panel, gbc, 6, enableReviewCheckBox);
         enableSaveReviewCheckBox = new JBCheckBox(
-                "保存 Java 文件时评审最后编辑的方法（可选，默认关闭）");
-        enableSaveReviewCheckBox.setToolTipText(
-                "仅在已同意发送代码后生效；同一代码指纹不会重复调用模型。");
-        panel.add(enableSaveReviewCheckBox, gbc);
+                "保存 Java 文件时评审最后编辑的方法（默认关闭）");
+        addWide(panel, gbc, 7, enableSaveReviewCheckBox);
+        previewEveryRequestCheckBox = new JBCheckBox("每次手动评审或解释前显示完整脱敏预览");
+        addWide(panel, gbc, 8, previewEveryRequestCheckBox);
+        allowInsecureLocalEndpointCheckBox = new JBCheckBox(
+                "允许 HTTP 本机回环端点（仅 localhost / 127.0.0.0/8 / ::1）");
+        allowInsecureLocalEndpointCheckBox.setToolTipText(
+                "仅用于本机模型或调试代理；非本机地址仍必须使用 HTTPS。");
+        addWide(panel, gbc, 9, allowInsecureLocalEndpointCheckBox);
 
-        gbc.gridy = 6;
-        previewEveryRequestCheckBox = new JBCheckBox(
-                "每次手动发送前显示脱敏预览");
-        previewEveryRequestCheckBox.setToolTipText(
-                "只影响 Alt+M / Alt+Shift+M 手动请求；保存触发仍按默认关闭和首次同意保护。");
-        panel.add(previewEveryRequestCheckBox, gbc);
-
-        gbc.gridy = 7;
-        panel.add(new JBLabel("自定义排除模式（每行或分号分隔）："), gbc);
-        gbc.gridy = 8;
-        gbc.fill = GridBagConstraints.BOTH;
-        gbc.weighty = 1;
-        excludedPatternsArea = new JBTextArea(5, 42);
+        addWide(panel, gbc, 10, new JBLabel("自定义排除模式（每行或分号分隔）："));
+        excludedPatternsArea = new JBTextArea(5, 44);
         excludedPatternsArea.setLineWrap(false);
         excludedPatternsArea.setToolTipText(
                 "示例：**/generated/**；**/secret/**；*Credential.java");
+        gbc.gridx = 0;
+        gbc.gridy = 11;
+        gbc.gridwidth = 2;
+        gbc.weightx = 1;
+        gbc.weighty = 1;
+        gbc.fill = GridBagConstraints.BOTH;
         panel.add(new JScrollPane(excludedPatternsArea), gbc);
 
-        // ---- 测试连接按钮 ----
-        gbc.gridx = 0; gbc.gridy = 9; gbc.gridwidth = 2;
-        gbc.fill = GridBagConstraints.NONE;
-        gbc.weighty = 0;
+        JPanel actions = new JPanel();
         testConnectionButton = new JButton("测试连接");
-        testConnectionButton.setToolTipText("用当前填写的配置发一个最小请求，验证是否可用。");
-        testConnectionButton.addActionListener(e -> testConnection());
-        panel.add(testConnectionButton, gbc);
+        testConnectionButton.addActionListener(event -> testConnection());
+        JButton revokeConsentButton = new JButton("撤销已打开项目的发送授权");
+        revokeConsentButton.addActionListener(event -> revokeOpenProjectConsent());
+        actions.add(testConnectionButton);
+        actions.add(revokeConsentButton);
+        gbc.gridy = 12;
+        gbc.weighty = 0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(actions, gbc);
 
-        // 提示
-        gbc.gridy = 10;
-        JBLabel hint = new JBLabel("<html><body style='width:400px'><hr>"
-                + "API Key 通过系统钥匙串（Windows DPAPI / macOS Keychain）安全存储，不会写入项目文件或 Git。<br>"
-                + "首次评审代码时会弹出发送预览，确认后才会发送。<br>"
-                + "内置排除：密钥/证书、.env、.git、.idea、build、target、out、node_modules。"
-                + "</body></html>");
-        hint.setForeground(new java.awt.Color(120, 120, 120));
+        connectionStatusLabel = new JBLabel("测试结果会显示在这里，不会打断当前设置流程。");
+        connectionStatusLabel.setForeground(JBColor.GRAY);
+        connectionStatusLabel.getAccessibleContext().setAccessibleName("模型连接测试状态");
+        gbc.gridy = 13;
+        panel.add(connectionStatusLabel, gbc);
+
+        JBLabel hint = new JBLabel(
+                "<html><body style='width:520px'><hr>"
+                        + "API Key 不会写入项目或普通设置文件。代码只会在项目授权后发送；"
+                        + "更换端点会自动使旧授权失效。项目外文件和排除文件不会采集。"
+                        + "</body></html>");
+        gbc.gridy = 14;
         panel.add(hint, gbc);
 
-        // 初始加载
         reset();
-
         return panel;
     }
 
     @Override
     public boolean isModified() {
-        CodeMentorSettings s = CodeMentorSettings.getInstance();
-        if (!safeEquals(apiUrlField.getText(), s.getApiBaseUrl())) return true;
-        if (!safeEquals(modelField.getText(), s.getModel())) return true;
-        if (levelCombo.getSelectedItem() != s.getTeachingLevel()) return true;
-        if (enableReviewCheckBox.isSelected() != s.isReviewEnabled()) return true;
-        if (enableSaveReviewCheckBox.isSelected() != s.isSaveReviewEnabled()) return true;
-        if (previewEveryRequestCheckBox.isSelected()
-                != s.isPreviewEveryManualRequest()) return true;
-        if (!safeEquals(
-                excludedPatternsArea.getText(), s.getExcludedFilePatterns())) return true;
-        // API Key 走 PasswordSafe，单独比对
-        if (!safeEquals(apiKeyText(), originalApiKey)) return true;
-        return false;
+        if (apiUrlField == null) return false;
+        CodeMentorSettings settings = CodeMentorSettings.getInstance();
+        return !apiUrlField.getText().trim().equals(settings.getApiBaseUrl())
+                || !modelField.getText().trim().equals(settings.getModel())
+                || levelCombo.getSelectedItem() != settings.getTeachingLevel()
+                || enableReviewCheckBox.isSelected() != settings.isReviewEnabled()
+                || enableSaveReviewCheckBox.isSelected() != settings.isSaveReviewEnabled()
+                || previewEveryRequestCheckBox.isSelected()
+                        != settings.isPreviewEveryManualRequest()
+                || allowInsecureLocalEndpointCheckBox.isSelected()
+                        != settings.isInsecureLocalEndpointAllowed()
+                || !excludedPatternsArea.getText().trim()
+                        .equals(settings.getExcludedFilePatterns())
+                || apiKeyField.getPassword().length > 0
+                || clearApiKeyCheckBox.isSelected();
     }
 
     @Override
     public void apply() throws ConfigurationException {
-        CodeMentorSettings s = CodeMentorSettings.getInstance();
-        s.setApiBaseUrl(apiUrlField.getText().trim());
-        s.setModel(modelField.getText().trim());
-        s.setTeachingLevel((CodeMentorSettings.TeachingLevel) levelCombo.getSelectedItem());
-        s.setReviewEnabled(enableReviewCheckBox.isSelected());
-        s.setSaveReviewEnabled(enableSaveReviewCheckBox.isSelected());
-        s.setPreviewEveryManualRequest(previewEveryRequestCheckBox.isSelected());
-        s.setExcludedFilePatterns(excludedPatternsArea.getText().trim());
-        // API Key 走 PasswordSafe（阻塞），用后台任务同步写完后再回 EDT 更新 originalApiKey。
-        // 关键：不能 fire-and-forget——否则用户关闭设置页太快，写入可能没完成，Key 丢失（P0-A）。
-        String newKey = apiKeyText();
-        String trimmed = newKey == null || newKey.isEmpty() ? null : newKey.trim();
-        // 标记"写入已开始"，reset 的异步读读到这个奇数代际会跳过
-        long gen = writeGeneration.incrementAndGet();
-        ProgressManager.getInstance().run(new Task.Backgroundable(null, "保存 API Key…", false) {
-            @Override
-            public void run(@org.jetbrains.annotations.Nullable ProgressIndicator indicator) {
-                ApiKeyStore.setApiKey(trimmed);
-            }
+        String url = apiUrlField.getText().trim();
+        boolean allowLocalHttp = allowInsecureLocalEndpointCheckBox.isSelected();
+        ModelEndpointValidator.Result endpoint =
+                ModelEndpointValidator.validate(url, allowLocalHttp);
+        if (!endpoint.valid()) throw new ConfigurationException(endpoint.errorMessage());
 
-            @Override
-            public void onSuccess() {
-                // 写入真正完成后，才更新 originalApiKey，并标记写入完成（代际再 +1 变偶数）
-                originalApiKey = newKey == null ? "" : newKey.trim();
-                writeGeneration.incrementAndGet();
+        String model = modelField.getText().trim();
+        String modelError = ModelEndpointValidator.validateModel(model);
+        if (!modelError.isEmpty()) throw new ConfigurationException(modelError);
+
+        CodeMentorSettings settings = CodeMentorSettings.getInstance();
+        String previousEndpoint = settings.getApiBaseUrl();
+        boolean reviewWasEnabled = settings.isReviewEnabled();
+        settings.setApiBaseUrl(endpoint.normalizedEndpoint());
+        settings.setModel(model);
+        settings.setTeachingLevel(
+                (CodeMentorSettings.TeachingLevel) levelCombo.getSelectedItem());
+        settings.setReviewEnabled(enableReviewCheckBox.isSelected());
+        settings.setSaveReviewEnabled(enableSaveReviewCheckBox.isSelected());
+        settings.setPreviewEveryManualRequest(previewEveryRequestCheckBox.isSelected());
+        settings.setInsecureLocalEndpointAllowed(allowLocalHttp);
+        settings.setExcludedFilePatterns(excludedPatternsArea.getText());
+        apiUrlField.setText(settings.getApiBaseUrl());
+        modelField.setText(settings.getModel());
+        excludedPatternsArea.setText(settings.getExcludedFilePatterns());
+        if (!previousEndpoint.equals(settings.getApiBaseUrl())
+                || (reviewWasEnabled && !settings.isReviewEnabled())) {
+            cancelOpenProjectRequests();
+        }
+
+        char[] keyChars = apiKeyField.getPassword();
+        boolean clearKey = clearApiKeyCheckBox.isSelected();
+        if (keyChars.length > 0 || clearKey) {
+            String newKey = clearKey ? null : new String(keyChars).trim();
+            AtomicReference<RuntimeException> writeError = new AtomicReference<>();
+            try {
+                ProgressManager.getInstance().run(new Task.Modal(
+                        null, "安全保存 CodeMentor API Key", false) {
+                    @Override
+                    public void run(@Nullable ProgressIndicator indicator) {
+                        try {
+                            ApiKeyStore.setApiKey(
+                                    newKey == null || newKey.isEmpty() ? null : newKey);
+                        } catch (RuntimeException error) {
+                            writeError.set(error);
+                        }
+                    }
+                });
+            } finally {
+                Arrays.fill(keyChars, '\0');
+                apiKeyField.setText("");
+                clearApiKeyCheckBox.setSelected(false);
+                apiKeyField.setEnabled(true);
+                testConnectionButton.setEnabled(true);
             }
-        });
+            if (writeError.get() != null) {
+                throw new ConfigurationException(
+                        "API Key 无法写入 PasswordSafe，请检查 IDE 密码存储设置。");
+            }
+            cancelOpenProjectRequests();
+        }
+        refreshApiKeyStatus();
     }
 
     @Override
     public void reset() {
-        CodeMentorSettings s = CodeMentorSettings.getInstance();
-        apiUrlField.setText(s.getApiBaseUrl());
-        modelField.setText(s.getModel());
-        levelCombo.setSelectedItem(s.getTeachingLevel());
-        enableReviewCheckBox.setSelected(s.isReviewEnabled());
-        enableSaveReviewCheckBox.setSelected(s.isSaveReviewEnabled());
-        previewEveryRequestCheckBox.setSelected(s.isPreviewEveryManualRequest());
-        excludedPatternsArea.setText(s.getExcludedFilePatterns());
-        // PasswordSafe 阻塞，异步加载，先置空
+        if (apiUrlField == null) return;
+        cancelConnectionTest();
+        CodeMentorSettings settings = CodeMentorSettings.getInstance();
+        apiUrlField.setText(settings.getApiBaseUrl());
+        modelField.setText(settings.getModel());
+        levelCombo.setSelectedItem(settings.getTeachingLevel());
+        enableReviewCheckBox.setSelected(settings.isReviewEnabled());
+        enableSaveReviewCheckBox.setSelected(settings.isSaveReviewEnabled());
+        previewEveryRequestCheckBox.setSelected(settings.isPreviewEveryManualRequest());
+        allowInsecureLocalEndpointCheckBox.setSelected(
+                settings.isInsecureLocalEndpointAllowed());
+        excludedPatternsArea.setText(settings.getExcludedFilePatterns());
         apiKeyField.setText("");
-        originalApiKey = "";
-        // 读之前检查：若有"已发起但未完成"的写入（代际为奇数），跳过本次读取，
-        // 避免和 apply 的写入竞态读到旧值（P0-A）。
-        if (writeGeneration.get() % 2L != 0L) {
-            return;
+        clearApiKeyCheckBox.setSelected(false);
+        apiKeyField.setEnabled(true);
+        if (connectionStatusLabel != null) {
+            connectionStatusLabel.setText("测试结果会显示在这里，不会打断当前设置流程。");
+            connectionStatusLabel.setForeground(JBColor.GRAY);
+            connectionStatusLabel.setToolTipText(null);
         }
-        CompletableFuture.runAsync(() -> {
-            String key = ApiKeyStore.getApiKey();
-            originalApiKey = key == null ? "" : key;
-            ApplicationManager.getApplication().invokeLater(() -> apiKeyField.setText(originalApiKey));
+        updateDependentControls();
+        refreshApiKeyStatus();
+    }
+
+    @Override
+    public void disposeUIResources() {
+        disposed = true;
+        apiKeyStatusGeneration.incrementAndGet();
+        connectionGeneration.incrementAndGet();
+        cancel(apiKeyStatusFuture);
+        cancel(connectionTestFuture);
+        if (apiKeyField != null) {
+            char[] chars = apiKeyField.getPassword();
+            Arrays.fill(chars, '\0');
+            apiKeyField.setText("");
+        }
+        apiKeyField = null;
+        apiKeyStatusLabel = null;
+        clearApiKeyCheckBox = null;
+        apiUrlField = null;
+        modelField = null;
+        levelCombo = null;
+        enableReviewCheckBox = null;
+        enableSaveReviewCheckBox = null;
+        previewEveryRequestCheckBox = null;
+        allowInsecureLocalEndpointCheckBox = null;
+        excludedPatternsArea = null;
+        testConnectionButton = null;
+        connectionStatusLabel = null;
+    }
+
+    private void refreshApiKeyStatus() {
+        cancel(apiKeyStatusFuture);
+        long expectedGeneration = apiKeyStatusGeneration.incrementAndGet();
+        if (apiKeyStatusLabel != null) apiKeyStatusLabel.setText("正在检查已保存的 API Key…");
+        apiKeyStatusFuture = AppExecutorUtil.getAppExecutorService().submit(() -> {
+            Boolean configured;
+            try {
+                String storedKey = ApiKeyStore.getApiKey();
+                configured = storedKey != null && !storedKey.isBlank();
+            } catch (RuntimeException error) {
+                configured = null;
+            }
+            final Boolean configuredStatus = configured;
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (disposed || apiKeyStatusGeneration.get() != expectedGeneration
+                        || apiKeyStatusLabel == null) return;
+                apiKeyStatusLabel.setText(configuredStatus == null
+                        ? "无法读取 PasswordSafe 状态"
+                        : configuredStatus
+                                ? "已在 PasswordSafe 中配置（不会回填显示）"
+                                : "尚未配置");
+            });
         });
     }
 
-    /** 「测试连接」：用当前填写的配置发一个最小请求。PasswordSafe 阻塞，走后台。 */
     private void testConnection() {
-        String key = apiKeyText().trim();
-        if (key.isEmpty()) {
-            Messages.showWarningDialog("请先填写 API Key 再测试连接。", "CodeMentor");
-            return;
-        }
-        testConnectionButton.setEnabled(false);
-        testConnectionButton.setText("测试中…");
+        char[] keyChars = apiKeyField.getPassword();
+        String enteredKey = new String(keyChars).trim();
+        Arrays.fill(keyChars, '\0');
         String url = apiUrlField.getText().trim();
         String model = modelField.getText().trim();
-        // 用临时 Key（还没 apply），后台发最小请求。用 whenComplete 保证异常时也恢复按钮（P1-2）。
-        CompletableFuture.supplyAsync(() ->
-                com.codementor.model.ZhiPuModelClient.testConnection(url, key, model))
-                .whenComplete((result, err) -> {
-                    ApplicationManager.getApplication().invokeLater(() -> {
-                        testConnectionButton.setEnabled(true);
-                        testConnectionButton.setText("测试连接");
-                        if (err != null) {
-                            Messages.showErrorDialog("连接失败：" + err.getMessage(), "CodeMentor");
-                        } else if (result.success) {
-                            Messages.showInfoMessage("连接成功！" + (result.message == null ? "" : "\n" + result.message), "CodeMentor");
-                        } else {
-                            Messages.showErrorDialog("连接失败：" + result.message, "CodeMentor");
-                        }
-                    });
-                });
+        boolean allowLocalHttp = allowInsecureLocalEndpointCheckBox.isSelected();
+
+        ModelEndpointValidator.Result endpoint =
+                ModelEndpointValidator.validate(url, allowLocalHttp);
+        if (!endpoint.valid()) {
+            showConnectionStatus(endpoint.errorMessage(), false);
+            return;
+        }
+        String modelError = ModelEndpointValidator.validateModel(model);
+        if (!modelError.isEmpty()) {
+            showConnectionStatus(modelError, false);
+            return;
+        }
+
+        cancelConnectionTest();
+        testConnectionButton.setEnabled(false);
+        testConnectionButton.setText("测试中…");
+        showConnectionStatus("正在连接模型端点…", null);
+        long expectedGeneration = connectionGeneration.incrementAndGet();
+        connectionTestFuture = AppExecutorUtil.getAppExecutorService().submit(() -> {
+            ZhiPuModelClient.TestResult result;
+            try {
+                String key = enteredKey.isEmpty() ? ApiKeyStore.getApiKey() : enteredKey;
+                result = ZhiPuModelClient.testConnection(
+                        endpoint.normalizedEndpoint(), key, model, allowLocalHttp);
+            } catch (RuntimeException error) {
+                result = new ZhiPuModelClient.TestResult(
+                        false, "无法读取 PasswordSafe 或启动连接测试。");
+            }
+            final ZhiPuModelClient.TestResult completedResult = result;
+            ApplicationManager.getApplication().invokeLater(() -> {
+                if (disposed || connectionGeneration.get() != expectedGeneration
+                        || testConnectionButton == null) return;
+                testConnectionButton.setEnabled(true);
+                testConnectionButton.setText("测试连接");
+                showConnectionStatus(completedResult.message, completedResult.success);
+            });
+        });
     }
 
-    private static boolean safeEquals(String a, String b) {
-        if (a == null) a = "";
-        if (b == null) b = "";
-        return a.equals(b);
+    private static void revokeOpenProjectConsent() {
+        int revoked = 0;
+        for (Project project : ProjectManager.getInstance().getOpenProjects()) {
+            if (!project.isDisposed()) {
+                CodeMentorProjectConsent.getInstance(project).revoke();
+                ReviewCoordinator.getInstance(project).cancelAll();
+                revoked++;
+            }
+        }
+        Messages.showInfoMessage(
+                "已撤销 " + revoked + " 个已打开项目的发送授权。"
+                        + "下次手动评审或解释前会重新确认；其他模型操作会先被拒绝。",
+                "CodeMentor");
     }
 
-    private String apiKeyText() {
-        return apiKeyField == null ? "" : new String(apiKeyField.getPassword());
+    private static void cancelOpenProjectRequests() {
+        for (Project project : ProjectManager.getInstance().getOpenProjects()) {
+            if (!project.isDisposed()) {
+                ReviewCoordinator.getInstance(project).cancelAll();
+            }
+        }
+    }
+
+    private void cancelConnectionTest() {
+        connectionGeneration.incrementAndGet();
+        cancel(connectionTestFuture);
+        connectionTestFuture = null;
+        if (testConnectionButton != null) {
+            testConnectionButton.setEnabled(true);
+            testConnectionButton.setText("测试连接");
+        }
+    }
+
+    private void updateDependentControls() {
+        if (enableReviewCheckBox == null || enableSaveReviewCheckBox == null) return;
+        boolean reviewEnabled = enableReviewCheckBox.isSelected();
+        enableSaveReviewCheckBox.setEnabled(reviewEnabled);
+        previewEveryRequestCheckBox.setEnabled(reviewEnabled);
+        levelCombo.setEnabled(reviewEnabled);
+    }
+
+    private void showConnectionStatus(String message, Boolean success) {
+        if (connectionStatusLabel == null) return;
+        String detail = message == null || message.isBlank()
+                ? "连接测试没有返回详细信息。"
+                : message;
+        // Prefixing keeps an endpoint-controlled message in JLabel plain-text mode.
+        connectionStatusLabel.setText("连接状态：" + detail);
+        connectionStatusLabel.setToolTipText("连接状态：" + detail);
+        connectionStatusLabel.setForeground(success == null
+                ? JBColor.GRAY
+                : success ? new JBColor(new java.awt.Color(0x2E7D32),
+                        new java.awt.Color(0x66BB6A)) : JBColor.RED);
+    }
+
+    private static GridBagConstraints constraints() {
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.insets = new Insets(4, 4, 4, 4);
+        return gbc;
+    }
+
+    private static void addLabel(
+            JPanel panel, GridBagConstraints gbc, int row, String text) {
+        gbc.gridx = 0;
+        gbc.gridy = row;
+        gbc.gridwidth = 1;
+        gbc.weightx = 0;
+        gbc.weighty = 0;
+        gbc.fill = GridBagConstraints.NONE;
+        panel.add(new JBLabel(text), gbc);
+    }
+
+    private static void addWide(
+            JPanel panel, GridBagConstraints gbc, int row, JComponent component) {
+        gbc.gridx = component instanceof JBCheckBox || component instanceof JBLabel ? 0 : 1;
+        gbc.gridy = row;
+        gbc.gridwidth = component instanceof JBCheckBox || component instanceof JBLabel ? 2 : 1;
+        gbc.weightx = 1;
+        gbc.weighty = 0;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        panel.add(component, gbc);
+    }
+
+    private static void cancel(Future<?> future) {
+        if (future != null) future.cancel(true);
     }
 }

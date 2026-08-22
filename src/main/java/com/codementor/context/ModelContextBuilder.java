@@ -6,7 +6,7 @@ import java.util.List;
 /**
  * 按固定优先级组装发送给模型的有界上下文。
  *
- * <p>目标代码始终优先完整保留；空间不足时先裁剪补充信息，并明确写入截断标记。
+ * <p>目标代码优先保留；只有目标本身超出预算时才保留首尾并明确标记中段截断。
  */
 public final class ModelContextBuilder {
 
@@ -14,25 +14,27 @@ public final class ModelContextBuilder {
     private static final String TRUNCATED_MARKER =
             "// ... 补充上下文已按字符预算截断 ...\n\n";
     private static final String TARGET_TRUNCATED_MARKER =
-            "\n// ... 目标代码已按字符预算截断 ...";
+            "\n// ... 目标代码中段已按字符预算截断 ...\n";
 
     private ModelContextBuilder() {}
 
     public static Result build(Input input) {
         String targetHeader = "// 分析目标：" + input.targetName + "\n";
-        String targetBlock = targetHeader + input.targetCode;
-        if (targetBlock.length() > MAX_CONTEXT_CHARS) {
+        if (targetHeader.length() + input.targetCode.length() > MAX_CONTEXT_CHARS) {
             int codeBudget = Math.max(
                     0,
                     MAX_CONTEXT_CHARS
                             - targetHeader.length()
                             - TARGET_TRUNCATED_MARKER.length());
+            int headBudget = codeBudget * 2 / 3;
+            int tailBudget = codeBudget - headBudget;
             String text = targetHeader
-                    + input.targetCode.substring(
-                            0, Math.min(codeBudget, input.targetCode.length()))
-                    + TARGET_TRUNCATED_MARKER;
+                    + input.targetCode.substring(0, headBudget)
+                    + TARGET_TRUNCATED_MARKER
+                    + input.targetCode.substring(input.targetCode.length() - tailBudget);
             return new Result(text, true);
         }
+        String targetBlock = targetHeader + input.targetCode;
 
         List<String> sections = optionalSections(input);
         int metadataBudget = MAX_CONTEXT_CHARS - targetBlock.length();
@@ -66,11 +68,12 @@ public final class ModelContextBuilder {
 
         StringBuilder typeSummary = new StringBuilder();
         if (!input.classDeclaration.isBlank()) {
-            typeSummary.append(input.classDeclaration).append(" {\n");
+            appendBounded(typeSummary, input.classDeclaration + " {\n");
             for (String field : input.referencedFields) {
-                typeSummary.append("  ").append(field).append('\n');
+                appendBounded(typeSummary, "  " + field + '\n');
+                if (typeSummary.length() >= MAX_CONTEXT_CHARS) break;
             }
-            typeSummary.append("}\n");
+            appendBounded(typeSummary, "}\n");
         }
         addSection(sections, typeSummary.toString());
         if (!input.diagnostics.isEmpty()) {
@@ -89,7 +92,17 @@ public final class ModelContextBuilder {
 
     private static void addSection(List<String> sections, String content) {
         if (content == null || content.isBlank()) return;
-        sections.add(content.strip() + "\n\n");
+        String normalized = content.strip();
+        if (normalized.length() > MAX_CONTEXT_CHARS) {
+            normalized = normalized.substring(0, MAX_CONTEXT_CHARS);
+        }
+        sections.add(normalized + "\n\n");
+    }
+
+    private static void appendBounded(StringBuilder target, String value) {
+        if (target.length() >= MAX_CONTEXT_CHARS || value == null || value.isEmpty()) return;
+        int remaining = MAX_CONTEXT_CHARS - target.length();
+        target.append(value, 0, Math.min(remaining, value.length()));
     }
 
     public static final class Input {

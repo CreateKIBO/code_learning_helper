@@ -52,6 +52,15 @@ class ModelContextBuilderTest {
 
     @Test
     void explicitlyMarksAnOversizedTargetAsTruncated() {
+        String targetHead = "HEAD_OF_TARGET";
+        String omittedMiddle = "MIDDLE_SHOULD_NOT_SURVIVE";
+        String targetTail = "TAIL_OF_TARGET";
+        String targetCode = targetHead
+                + "x".repeat(ModelContextBuilder.MAX_CONTEXT_CHARS)
+                + omittedMiddle
+                + "y".repeat(ModelContextBuilder.MAX_CONTEXT_CHARS)
+                + targetTail;
+
         ModelContextBuilder.Result result = ModelContextBuilder.build(
                 new ModelContextBuilder.Input(
                         "",
@@ -59,12 +68,34 @@ class ModelContextBuilderTest {
                         "",
                         List.of(),
                         "Demo#large",
-                        "x".repeat(20_000),
+                        targetCode,
                         List.of(),
                         List.of()));
 
         assertTrue(result.truncated());
-        assertTrue(result.text().contains("目标代码已按字符预算截断"));
+        assertTrue(result.text().contains("目标代码中段已按字符预算截断"));
+        assertTrue(result.text().startsWith("// 分析目标：Demo#large\n" + targetHead));
+        assertTrue(result.text().endsWith(targetTail));
+        assertFalse(result.text().contains(omittedMiddle));
         assertTrue(result.text().length() <= ModelContextBuilder.MAX_CONTEXT_CHARS);
+    }
+
+    @Test
+    void boundsAnOversizedReferencedFieldBeforeAssembly() {
+        String targetCode = "void run() {}";
+        ModelContextBuilder.Result result = ModelContextBuilder.build(
+                new ModelContextBuilder.Input(
+                        "",
+                        "",
+                        "class Demo",
+                        List.of("private String data = \"" + "x".repeat(50_000) + "\";"),
+                        "Demo#run",
+                        targetCode,
+                        List.of(),
+                        List.of()));
+
+        assertTrue(result.truncated());
+        assertTrue(result.text().length() <= ModelContextBuilder.MAX_CONTEXT_CHARS);
+        assertTrue(result.text().endsWith(targetCode));
     }
 }

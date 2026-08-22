@@ -7,6 +7,9 @@ import java.util.regex.Pattern;
 /** 在任何上下文采集和模型调用前判断相对文件路径是否允许分析。 */
 public final class FileExclusionPolicy {
 
+    private static final int MAX_CUSTOM_PATTERNS = 100;
+    private static final int MAX_PATTERN_CHARS = 256;
+
     public static final List<String> BUILT_IN_PATTERNS = List.of(
             ".env",
             ".env.*",
@@ -14,8 +17,12 @@ public final class FileExclusionPolicy {
             "*.key",
             "*.p12",
             "*.pfx",
+            "*.jks",
+            "*.keystore",
             "id_rsa",
             "id_ed25519",
+            "credentials.json",
+            "service-account*.json",
             "**/.git/**",
             "**/.idea/**",
             "**/build/**",
@@ -48,8 +55,11 @@ public final class FileExclusionPolicy {
         List<String> result = new ArrayList<>();
         for (String line : value.split("[;\\r\\n]+")) {
             String pattern = line.trim();
-            if (!pattern.isEmpty() && !pattern.startsWith("#")) {
+            if (!pattern.isEmpty()
+                    && !pattern.startsWith("#")
+                    && pattern.length() <= MAX_PATTERN_CHARS) {
                 result.add(pattern);
+                if (result.size() >= MAX_CUSTOM_PATTERNS) break;
             }
         }
         return List.copyOf(result);

@@ -15,6 +15,7 @@ import com.intellij.util.concurrency.AppExecutorUtil;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -25,11 +26,21 @@ public final class LearningHistoryService implements Disposable {
 
     private static final Logger LOG = Logger.getInstance(LearningHistoryService.class);
 
-    private final ExecutorService executor =
-            AppExecutorUtil.createBoundedApplicationPoolExecutor(
-                    "CodeMentor Learning History", 1);
-    private final LearningEventStore store = new LearningEventStore(
-            Path.of(PathManager.getSystemPath(), "codementor", "learning-events.jsonl"));
+    private final ExecutorService executor;
+    private final LearningEventStore store;
+
+    public LearningHistoryService() {
+        this(
+                new LearningEventStore(Path.of(
+                        PathManager.getSystemPath(), "codementor", "learning-events.jsonl")),
+                AppExecutorUtil.createBoundedApplicationPoolExecutor(
+                        "CodeMentor Learning History", 1));
+    }
+
+    LearningHistoryService(LearningEventStore store, ExecutorService executor) {
+        this.store = Objects.requireNonNull(store, "store");
+        this.executor = Objects.requireNonNull(executor, "executor");
+    }
 
     public static LearningHistoryService getInstance() {
         return ApplicationManager.getApplication().getService(LearningHistoryService.class);
@@ -49,8 +60,8 @@ public final class LearningHistoryService implements Disposable {
                     suggestion.getId(),
                     suggestion.getKnowledgePoint(),
                     suggestion.getTitle(),
-                    suggestion.getEvidence(),
-                    ""));
+                    "",
+                    suggestion.getCertainty().name()));
         }
     }
 
@@ -60,7 +71,7 @@ public final class LearningHistoryService implements Disposable {
                                         String reviewId) {
         append(eventFor(
                 LearningEvent.Type.EXPLANATION_VIEWED,
-                project, context, suggestion, reviewId, "", ""));
+                project, context, suggestion, reviewId, ""));
     }
 
     public void recordFeedback(Project project, ReviewContext context,
@@ -68,7 +79,7 @@ public final class LearningHistoryService implements Disposable {
                                String reviewId) {
         append(eventFor(
                 LearningEvent.Type.FEEDBACK,
-                project, context, suggestion, reviewId, "", feedback.name()));
+                project, context, suggestion, reviewId, feedback.name()));
     }
 
     public void recordVerification(Project project, ReviewContext context,
@@ -76,8 +87,7 @@ public final class LearningHistoryService implements Disposable {
                                    String reviewId) {
         append(eventFor(
                 LearningEvent.Type.VERIFICATION_COMPLETED,
-                project, context, suggestion, reviewId,
-                result.getEvidence(), result.getStatus().name()));
+                project, context, suggestion, reviewId, result.getStatus().name()));
     }
 
     public CompletableFuture<Path> exportMarkdown(Path target) {
@@ -113,12 +123,22 @@ public final class LearningHistoryService implements Disposable {
         }, executor);
     }
 
+    /** 按单线程队列顺序清除当前历史和轮转文件。 */
+    public CompletableFuture<Void> clearHistory() {
+        return CompletableFuture.runAsync(() -> {
+            try {
+                store.clear();
+            } catch (IOException e) {
+                throw new IllegalStateException("清除学习记录失败：" + e.getMessage(), e);
+            }
+        }, executor);
+    }
+
     private LearningEvent eventFor(LearningEvent.Type type,
                                    Project project,
                                    ReviewContext context,
                                    Suggestion suggestion,
                                    String reviewId,
-                                   String detail,
                                    String outcome) {
         return new LearningEvent(
                 reviewId,
@@ -129,7 +149,7 @@ public final class LearningHistoryService implements Disposable {
                 suggestion.getId(),
                 suggestion.getKnowledgePoint(),
                 suggestion.getTitle(),
-                detail,
+                "",
                 outcome);
     }
 

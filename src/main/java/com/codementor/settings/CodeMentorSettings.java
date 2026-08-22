@@ -2,6 +2,7 @@ package com.codementor.settings;
 
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.PersistentStateComponent;
+import com.intellij.openapi.components.RoamingType;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.components.State;
 import com.intellij.openapi.components.Storage;
@@ -9,35 +10,56 @@ import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 /**
- * CodeMentor 应用级设置（方案第 12 节）。
+ * Application-level, non-secret CodeMentor settings.
  *
- * <p>用 {@link PersistentStateComponent} 把配置序列化到本地 XML。
- * <b>注意：API Key 不在这里</b>——敏感数据必须走 {@link ApiKeyStore}（PasswordSafe），
- * 不能落盘明文（方案第 11 节）。
- *
- * <p>这里只存：API 地址、模型名、教学级别、评审开关、是否已同意首次发送代码。
- * 用 {@link Service.Level#APP} 应用级（单用户、跨项目共享）。
+ * <p>The API key is deliberately stored through {@link ApiKeyStore}. Consent is
+ * deliberately not stored here either: it is project-scoped and endpoint-bound
+ * in {@link CodeMentorProjectConsent}.
  */
 @Service(Service.Level.APP)
-@State(name = "CodeMentorSettings", storages = @Storage("codeMentor.xml"))
-public final class CodeMentorSettings implements PersistentStateComponent<CodeMentorSettings.State> {
+@State(
+        name = "CodeMentorSettings",
+        storages = @Storage(value = "codeMentor.xml", roamingType = RoamingType.DISABLED))
+public final class CodeMentorSettings
+        implements PersistentStateComponent<CodeMentorSettings.State> {
 
-    /** 教学级别（方案第 10 节）。 */
-    public enum TeachingLevel { BEGINNER, INTERMEDIATE, JAVAWEB }
+    public enum TeachingLevel {
+        BEGINNER("初学"),
+        INTERMEDIATE("进阶"),
+        JAVAWEB("JavaWeb");
 
-    /** 默认值集中在这里，便于设置页和客户端统一引用。 */
+        private final String displayName;
+
+        TeachingLevel(String displayName) {
+            this.displayName = displayName;
+        }
+
+        public String getDisplayName() {
+            return displayName;
+        }
+
+        @Override
+        public String toString() {
+            return displayName;
+        }
+    }
+
+    /** Defaults shared by the settings UI and immutable request snapshots. */
     public static final class Defaults {
-        public static final String API_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
-        public static final String MODEL = "glm-4-plus";
+        public static final String API_BASE_URL =
+                "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+        public static final String MODEL = "glm-5.2";
         public static final TeachingLevel TEACHING_LEVEL = TeachingLevel.JAVAWEB;
         public static final boolean ENABLE_REVIEW = true;
         public static final boolean ENABLE_SAVE_REVIEW = false;
         public static final boolean PREVIEW_EVERY_MANUAL_REQUEST = false;
+        public static final boolean ALLOW_INSECURE_LOCAL_ENDPOINT = false;
         public static final String EXCLUDED_FILE_PATTERNS = "";
+
         private Defaults() {}
     }
 
-    /** 可序列化的状态对象。字段必须 public + 非 final，由 IntelliJ 反射读写。 */
+    /** Public mutable fields are required by IntelliJ's XML serializer. */
     public static class State {
         public String apiBaseUrl = Defaults.API_BASE_URL;
         public String model = Defaults.MODEL;
@@ -46,9 +68,15 @@ public final class CodeMentorSettings implements PersistentStateComponent<CodeMe
         public boolean enableSaveReview = Defaults.ENABLE_SAVE_REVIEW;
         public boolean previewEveryManualRequest =
                 Defaults.PREVIEW_EVERY_MANUAL_REQUEST;
+        public boolean allowInsecureLocalEndpoint =
+                Defaults.ALLOW_INSECURE_LOCAL_ENDPOINT;
         public String excludedFilePatterns = Defaults.EXCLUDED_FILE_PATTERNS;
-        /** 是否已同意"首次发送代码"（方案第 11 节，首次发送前预览确认，确认后不再弹）。 */
-        public boolean consentedToSend = false;
+
+        /**
+         * Legacy 1.0 field retained only so old XML can be read. It is ignored:
+         * application-wide consent is not safe for multiple projects/endpoints.
+         */
+        @Deprecated public boolean consentedToSend = false;
     }
 
     private State state = new State();
@@ -58,48 +86,93 @@ public final class CodeMentorSettings implements PersistentStateComponent<CodeMe
     }
 
     @Override
-    public @Nullable State getState() { return state; }
+    public synchronized @Nullable State getState() {
+        return state;
+    }
 
     @Override
-    public void loadState(@NotNull State state) { this.state = state; }
+    public synchronized void loadState(@NotNull State loadedState) {
+        loadedState.consentedToSend = false;
+        if ("glm-4-plus".equals(loadedState.model)) {
+            loadedState.model = Defaults.MODEL;
+        }
+        state = loadedState;
+    }
 
-    // ---------------- 业务 getter/setter ----------------
+    public synchronized String getApiBaseUrl() {
+        return nonBlankOrDefault(state.apiBaseUrl, Defaults.API_BASE_URL);
+    }
 
-    public String getApiBaseUrl() { return state.apiBaseUrl; }
-    public void setApiBaseUrl(String url) { state.apiBaseUrl = url; }
+    public synchronized void setApiBaseUrl(String url) {
+        state.apiBaseUrl = normalize(url);
+    }
 
-    public String getModel() { return state.model; }
-    public void setModel(String model) { state.model = model; }
+    public synchronized String getModel() {
+        return nonBlankOrDefault(state.model, Defaults.MODEL);
+    }
 
-    public TeachingLevel getTeachingLevel() {
+    public synchronized void setModel(String model) {
+        state.model = normalize(model);
+    }
+
+    public synchronized TeachingLevel getTeachingLevel() {
         try {
             return TeachingLevel.valueOf(state.teachingLevel);
-        } catch (Exception e) {
+        } catch (Exception ignored) {
             return Defaults.TEACHING_LEVEL;
         }
     }
-    public void setTeachingLevel(TeachingLevel level) { state.teachingLevel = level.name(); }
 
-    public boolean isReviewEnabled() { return state.enableReview; }
-    public void setReviewEnabled(boolean enabled) { state.enableReview = enabled; }
+    public synchronized void setTeachingLevel(TeachingLevel level) {
+        state.teachingLevel = (level == null ? Defaults.TEACHING_LEVEL : level).name();
+    }
 
-    public boolean isSaveReviewEnabled() { return state.enableSaveReview; }
-    public void setSaveReviewEnabled(boolean enabled) { state.enableSaveReview = enabled; }
+    public synchronized boolean isReviewEnabled() {
+        return state.enableReview;
+    }
 
-    public boolean hasConsentedToSend() { return state.consentedToSend; }
-    public void setConsentedToSend(boolean consented) { state.consentedToSend = consented; }
+    public synchronized void setReviewEnabled(boolean enabled) {
+        state.enableReview = enabled;
+    }
 
-    public boolean isPreviewEveryManualRequest() {
+    public synchronized boolean isSaveReviewEnabled() {
+        return state.enableSaveReview;
+    }
+
+    public synchronized void setSaveReviewEnabled(boolean enabled) {
+        state.enableSaveReview = enabled;
+    }
+
+    public synchronized boolean isPreviewEveryManualRequest() {
         return state.previewEveryManualRequest;
     }
-    public void setPreviewEveryManualRequest(boolean enabled) {
+
+    public synchronized void setPreviewEveryManualRequest(boolean enabled) {
         state.previewEveryManualRequest = enabled;
     }
 
-    public String getExcludedFilePatterns() {
+    public synchronized boolean isInsecureLocalEndpointAllowed() {
+        return state.allowInsecureLocalEndpoint;
+    }
+
+    public synchronized void setInsecureLocalEndpointAllowed(boolean allowed) {
+        state.allowInsecureLocalEndpoint = allowed;
+    }
+
+    public synchronized String getExcludedFilePatterns() {
         return state.excludedFilePatterns == null ? "" : state.excludedFilePatterns;
     }
-    public void setExcludedFilePatterns(String patterns) {
-        state.excludedFilePatterns = patterns == null ? "" : patterns;
+
+    public synchronized void setExcludedFilePatterns(String patterns) {
+        state.excludedFilePatterns = normalize(patterns);
+    }
+
+    private static String normalize(String value) {
+        return value == null ? "" : value.trim();
+    }
+
+    private static String nonBlankOrDefault(String value, String fallback) {
+        String normalized = normalize(value);
+        return normalized.isEmpty() ? fallback : normalized;
     }
 }

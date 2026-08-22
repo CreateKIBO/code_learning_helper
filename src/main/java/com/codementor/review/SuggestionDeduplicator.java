@@ -39,6 +39,8 @@ public final class SuggestionDeduplicator {
                 .example(source.getExample())
                 .knowledgePoint(source.getKnowledgePoint())
                 .verificationCriteria(source.getVerificationCriteria())
+                .nextStep(source.getNextStep())
+                .selfCheckQuestion(source.getSelfCheckQuestion())
                 .build();
     }
 

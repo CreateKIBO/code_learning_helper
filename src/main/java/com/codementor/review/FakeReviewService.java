@@ -2,10 +2,13 @@ package com.codementor.review;
 
 import com.codementor.practice.Exercise;
 import com.codementor.practice.ExerciseRequest;
+import com.codementor.model.ModelRequestConfig;
+import com.intellij.util.concurrency.AppExecutorUtil;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.Future;
 
 /**
  * 假评审服务 —— 本地演示和自动测试用，返回硬编码的教学建议。
@@ -29,10 +32,14 @@ public class FakeReviewService implements ReviewService {
     private final AtomicInteger counter = new AtomicInteger(0);
 
     @Override
-    public CancellableRequest review(ReviewContext context, String requestId, Callback callback) {
+    public CancellableRequest review(
+            ModelRequestConfig config,
+            ReviewContext context,
+            String requestId,
+            Callback callback) {
         int seq = counter.incrementAndGet();
         // 用守护线程模拟异步网络调用，绝不阻塞调用方（EDT）
-        Thread worker = new Thread(() -> {
+        return startAsync(() -> {
             try {
                 // 模拟模型延迟，让 UI 能看到 "请求中..." 状态
                 TimeUnit.MILLISECONDS.sleep(800);
@@ -46,22 +53,25 @@ public class FakeReviewService implements ReviewService {
                     callback.onFailure(simulatedFailure());
                     return;
                 }
-                callback.onSuccess(context.getReviewMode() == ReviewMode.EXPLAIN
-                        ? buildFakeExplanations(context)
-                        : buildFakeSuggestions(context));
+                boolean explaining = context.getReviewMode() == ReviewMode.EXPLAIN;
+                callback.onSuccess(new ReviewResult(
+                        explaining
+                                ? "这段代码可以沿着输入、关键调用和输出建立执行流程。"
+                                : "优先关注输入边界、分层职责和方法职责这三个学习点。",
+                        explaining
+                                ? buildFakeExplanations(context)
+                                : buildFakeSuggestions(context)));
             } catch (Exception e) {
                 callback.onFailure("假服务内部错误: " + e.getMessage());
             }
-        }, "CodeMentor-FakeReview-" + requestId);
-        worker.setDaemon(true);
-        worker.start();
-        return CancellableRequest.forThread(worker);
+        });
     }
 
     @Override
-    public CancellableRequest verify(VerificationRequest request, String requestId,
+    public CancellableRequest verify(ModelRequestConfig config,
+                                     VerificationRequest request, String requestId,
                                      VerificationCallback callback) {
-        Thread worker = new Thread(() -> {
+        return startAsync(() -> {
             try {
                 TimeUnit.MILLISECONDS.sleep(500);
                 boolean changed = !request.getOriginalContext().getFingerprint()
@@ -79,16 +89,14 @@ public class FakeReviewService implements ReviewService {
             } catch (Exception e) {
                 callback.onFailure("假验证服务内部错误：" + e.getMessage());
             }
-        }, "CodeMentor-FakeVerify-" + requestId);
-        worker.setDaemon(true);
-        worker.start();
-        return CancellableRequest.forThread(worker);
+        });
     }
 
     @Override
     public CancellableRequest followUp(
+            ModelRequestConfig config,
             FollowUpRequest request, String requestId, FollowUpCallback callback) {
-        Thread worker = new Thread(() -> {
+        return startAsync(() -> {
             try {
                 TimeUnit.MILLISECONDS.sleep(400);
                 callback.onSuccess(
@@ -97,16 +105,14 @@ public class FakeReviewService implements ReviewService {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-        }, "CodeMentor-FakeFollowUp-" + requestId);
-        worker.setDaemon(true);
-        worker.start();
-        return CancellableRequest.forThread(worker);
+        });
     }
 
     @Override
     public CancellableRequest generateExercise(
+            ModelRequestConfig config,
             ExerciseRequest request, String requestId, ExerciseCallback callback) {
-        Thread worker = new Thread(() -> {
+        return startAsync(() -> {
             try {
                 TimeUnit.MILLISECONDS.sleep(450);
                 callback.onSuccess(new Exercise(
@@ -120,10 +126,12 @@ public class FakeReviewService implements ReviewService {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
-        }, "CodeMentor-FakeExercise-" + requestId);
-        worker.setDaemon(true);
-        worker.start();
-        return CancellableRequest.forThread(worker);
+        });
+    }
+
+    private static CancellableRequest startAsync(Runnable task) {
+        Future<?> future = AppExecutorUtil.getAppExecutorService().submit(task);
+        return CancellableRequest.forFuture(future);
     }
 
     /** 模拟真实模型常见的失败原因，让 FAILED 状态有真实感。 */
@@ -131,7 +139,7 @@ public class FakeReviewService implements ReviewService {
         String[] reasons = {
             "请求超时（模型响应超过 30 秒）",
             "响应 JSON 解析失败：缺少 suggestions 字段",
-            "模型返回了空建议列表",
+            "模型返回结果未通过结构校验",
             "网络连接中断"
         };
         return reasons[(int) (System.currentTimeMillis() % reasons.length)];
@@ -160,6 +168,8 @@ public class FakeReviewService implements ReviewService {
                                 + "private String username;")
                         .knowledgePoint("Bean Validation 参数校验")
                         .verificationCriteria("外部输入在进入业务逻辑前具有明确的校验约束")
+                        .nextStep("先标出所有来自 HTTP 请求的外部输入，再确认它们进入业务逻辑前是否有约束。")
+                        .selfCheckQuestion("为什么参数校验通常应发生在进入核心业务逻辑之前？")
                         .build(),
 
                 new Suggestion.Builder()
@@ -179,6 +189,8 @@ public class FakeReviewService implements ReviewService {
                                 + "}")
                         .knowledgePoint("统一响应体设计")
                         .verificationCriteria("返回结构与当前项目既有 API 契约保持一致")
+                        .nextStep("先对照项目中已有接口，找出统一响应结构的既有约定。")
+                        .selfCheckQuestion("统一响应体解决的是哪一类前后端协作问题？")
                         .build(),
 
                 new Suggestion.Builder()
@@ -195,6 +207,8 @@ public class FakeReviewService implements ReviewService {
                                 + "// Service 负责业务编排，Repository 负责持久化。")
                         .knowledgePoint("单一职责与分层")
                         .verificationCriteria("方法中的职责边界比修改前更清晰，且没有引入无意义抽象")
+                        .nextStep("用一句话分别写出方法当前承担的职责，再判断是否真的需要拆分。")
+                        .selfCheckQuestion("什么时候拆分方法会增加复杂度而不是改善设计？")
                         .build()
         );
         // 方案约束：每次最多 3 条。这里固定构造 3 条（S1/S2/S3）。
@@ -215,6 +229,8 @@ public class FakeReviewService implements ReviewService {
                         .example("// 先用自己的话写三行：输入 → 处理 → 输出")
                         .knowledgePoint("代码执行流程")
                         .verificationCriteria("能用自己的话说明方法的主要执行流程")
+                        .nextStep("按输入、关键分支和输出的顺序，用三句话复述执行过程。")
+                        .selfCheckQuestion("如果关键条件取反，执行路径和返回结果会怎样变化？")
                         .build(),
                 new Suggestion.Builder()
                         .id("S2")
@@ -228,6 +244,8 @@ public class FakeReviewService implements ReviewService {
                         .example("// 这是一条理解提示，不要求你立刻重构。")
                         .knowledgePoint("JavaWeb 分层职责")
                         .verificationCriteria("能说明当前类型在调用链中的职责")
+                        .nextStep("从一次请求进入当前类的位置开始，继续追踪它调用的下一层。")
+                        .selfCheckQuestion("当前类型应该知道哪些信息，又不应该知道哪些实现细节？")
                         .build());
     }
 }

@@ -3,7 +3,7 @@ package com.codementor.review;
 /**
  * 一条导师建议 —— 对应 AI 输出协议中的单个 suggestion（最终方案第 9 节）。
  *
- * <p>侧栏按三层渐进式展示（提示在前、答案在后）：
+ * <p>侧栏先展示证据、思考提示、最小下一步和完成标准，再按三层渐进式展示答案：
  * <ol>
  *   <li>{@link #hint} —— 只指方向，不立即给答案。</li>
  *   <li>{@link #explanation} —— 完整讲解（默认折叠，用户点开才看）。</li>
@@ -38,16 +38,19 @@ public final class Suggestion {
     private final String example;      // 第三层：参考代码（可选，进一步折叠）
     private final String knowledgePoint; // 知识点标签，用于学习记录
     private final String verificationCriteria; // 修改验证时用于判断问题是否解决
+    private final String nextStep; // 学习者先亲手完成的一步，不是整段替写代码
+    private final String selfCheckQuestion; // 理解或修改后的主动回忆问题
 
     /**
      * 私有构造器：统一走 {@link Builder}。
-     * 9 个参数里 7 个是 String，公开构造器等于给"传错顺序"留门；
+     * 多个参数都是 String，公开构造器等于给“传错顺序”留门；
      * 私有后 Builder 是唯一构造入口（嵌套类不受 private 限制）。
      */
     private Suggestion(String id, Category category, Certainty certainty,
                        String title, String evidence, String hint,
                        String explanation, String example, String knowledgePoint,
-                       String verificationCriteria) {
+                       String verificationCriteria, String nextStep,
+                       String selfCheckQuestion) {
         this.id = id;
         this.category = category;
         this.certainty = certainty;
@@ -58,6 +61,8 @@ public final class Suggestion {
         this.example = example;
         this.knowledgePoint = knowledgePoint;
         this.verificationCriteria = verificationCriteria;
+        this.nextStep = nextStep;
+        this.selfCheckQuestion = selfCheckQuestion;
     }
 
     public String getId() { return id; }
@@ -70,6 +75,8 @@ public final class Suggestion {
     public String getExample() { return example; }
     public String getKnowledgePoint() { return knowledgePoint; }
     public String getVerificationCriteria() { return verificationCriteria; }
+    public String getNextStep() { return nextStep; }
+    public String getSelfCheckQuestion() { return selfCheckQuestion; }
 
     @Override
     public String toString() {
@@ -79,7 +86,7 @@ public final class Suggestion {
     /**
      * Builder —— 用于模型 JSON 解析和测试桩构造 Suggestion。
      *
-     * <p>为什么需要 Builder：9 参构造器全是 String，模型解析时极易把
+     * <p>为什么需要 Builder：多个同类型参数极易在模型解析时把
      * evidence 和 hint 之类相邻参数填反，编译期查不出来。
      * Builder 让每个字段都有名字，传错一目了然。
      *
@@ -97,6 +104,8 @@ public final class Suggestion {
         private String example = "";
         private String knowledgePoint = "";
         private String verificationCriteria = "";
+        private String nextStep = "";
+        private String selfCheckQuestion = "";
 
         public Builder id(String id) { this.id = id; return this; }
         public Builder category(Category category) { this.category = category; return this; }
@@ -111,6 +120,11 @@ public final class Suggestion {
             this.verificationCriteria = verificationCriteria;
             return this;
         }
+        public Builder nextStep(String nextStep) { this.nextStep = nextStep; return this; }
+        public Builder selfCheckQuestion(String selfCheckQuestion) {
+            this.selfCheckQuestion = selfCheckQuestion;
+            return this;
+        }
 
         public Suggestion build() {
             if (category == null) {
@@ -123,7 +137,8 @@ public final class Suggestion {
                 throw new IllegalStateException("Suggestion 必须有 title");
             }
             return new Suggestion(id, category, certainty, title,
-                    evidence, hint, explanation, example, knowledgePoint, verificationCriteria);
+                    evidence, hint, explanation, example, knowledgePoint,
+                    verificationCriteria, nextStep, selfCheckQuestion);
         }
     }
 }

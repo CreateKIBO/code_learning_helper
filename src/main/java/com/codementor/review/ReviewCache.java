@@ -1,6 +1,6 @@
 package com.codementor.review;
 
-import com.codementor.settings.CodeMentorSettings;
+import com.codementor.model.ModelRequestConfig;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,7 +11,14 @@ import java.util.Optional;
 public final class ReviewCache {
 
     private final int capacity;
-    private final Map<CacheKey, List<Suggestion>> entries;
+    private final Map<CacheKey, CachedReview> entries;
+
+    public record CachedReview(ReviewResult result, String learningReviewId) {
+        public CachedReview {
+            if (result == null) throw new IllegalArgumentException("result 不能为空");
+            learningReviewId = learningReviewId == null ? "" : learningReviewId;
+        }
+    }
 
     public ReviewCache(int capacity) {
         if (capacity < 1) {
@@ -21,66 +28,74 @@ public final class ReviewCache {
         this.entries = new LinkedHashMap<>(capacity, 0.75f, true) {
             @Override
             protected boolean removeEldestEntry(
-                    Map.Entry<CacheKey, List<Suggestion>> eldest) {
+                    Map.Entry<CacheKey, CachedReview> eldest) {
                 return size() > ReviewCache.this.capacity;
             }
         };
     }
 
-    public synchronized Optional<List<Suggestion>> get(
-            ReviewContext context, CodeMentorSettings settings) {
-        return get(context, settings.getModel(), settings.getTeachingLevel());
-    }
-
-    public synchronized Optional<List<Suggestion>> get(
-            ReviewContext context,
-            String model,
-            CodeMentorSettings.TeachingLevel teachingLevel) {
-        return Optional.ofNullable(entries.get(key(context, model, teachingLevel)));
+    public synchronized Optional<CachedReview> get(
+            ReviewContext context, ModelRequestConfig config) {
+        return Optional.ofNullable(entries.get(key(context, config)));
     }
 
     public synchronized void put(
             ReviewContext context,
-            CodeMentorSettings settings,
-            List<Suggestion> suggestions) {
-        put(context, settings.getModel(), settings.getTeachingLevel(), suggestions);
+            ModelRequestConfig config,
+            ReviewResult result,
+            String learningReviewId) {
+        entries.put(
+                key(context, config),
+                new CachedReview(result, learningReviewId));
     }
 
-    public synchronized void put(
+    void put(
             ReviewContext context,
-            String model,
-            CodeMentorSettings.TeachingLevel teachingLevel,
-            List<Suggestion> suggestions) {
-        entries.put(key(context, model, teachingLevel), List.copyOf(suggestions));
+            ModelRequestConfig config,
+            ReviewResult result) {
+        put(context, config, result, "");
     }
 
-    public synchronized boolean contains(
-            ReviewContext context, CodeMentorSettings settings) {
-        return get(context, settings).isPresent();
+    public synchronized void clear() {
+        entries.clear();
     }
 
     private static CacheKey key(
-            ReviewContext context,
-            String model,
-            CodeMentorSettings.TeachingLevel teachingLevel) {
+            ReviewContext context, ModelRequestConfig config) {
         return new CacheKey(
                 context.getFilePath(),
                 context.getTargetName(),
+                context.getTargetIdentity(),
                 context.getFingerprint(),
                 context.getReviewMode().name(),
                 context.getJavaWebContext().getRole().name(),
+                context.getJavaWebContext().getReviewFocus(),
+                List.copyOf(context.getJavaWebContext().getConcerns()),
                 context.getProjectRules(),
-                model,
-                teachingLevel.name());
+                context.getModelContext(),
+                List.copyOf(context.getTechnologyTags()),
+                List.copyOf(context.getDiagnostics()),
+                config.endpoint(),
+                config.model(),
+                config.teachingLevel().name(),
+                config.promptSchemaVersion());
     }
 
     private record CacheKey(
             String filePath,
             String targetName,
+            String targetIdentity,
             String codeFingerprint,
             String reviewMode,
             String javaWebRole,
+            String javaWebFocus,
+            List<String> javaWebConcerns,
             String projectRules,
+            String modelContext,
+            List<String> technologyTags,
+            List<String> diagnostics,
+            String endpoint,
             String model,
-            String teachingLevel) {}
+            String teachingLevel,
+            String promptSchemaVersion) {}
 }

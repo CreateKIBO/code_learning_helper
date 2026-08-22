@@ -4,11 +4,16 @@ import com.codementor.CodeMentorService;
 import com.codementor.history.KnowledgeReminder;
 import com.codementor.history.LearningHistoryService;
 import com.codementor.javaweb.JavaWebRole;
+import com.codementor.model.ModelRequestConfig;
+import com.codementor.privacy.OutboundRequestGuard;
 import com.codementor.review.CancellableRequest;
+import com.codementor.review.FeedbackType;
 import com.codementor.review.ReviewContext;
 import com.codementor.review.ReviewService;
 import com.codementor.review.ReviewSession;
 import com.codementor.review.Suggestion;
+import com.codementor.review.VerificationResult;
+import com.codementor.review.VerificationStatus;
 import com.codementor.settings.CodeMentorSettings;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
@@ -17,12 +22,16 @@ import com.intellij.openapi.project.Project;
 
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicLong;
 
-/** 基于本地学习记录生成单知识点小练习，不读取或生成完整项目。 */
+/** Generates one bounded practice task from local learning history. */
 @Service(Service.Level.PROJECT)
 public final class ExerciseCoordinator implements Disposable {
 
     private final Project project;
+    private final AtomicLong generation = new AtomicLong();
+    private CompletableFuture<List<KnowledgeReminder>> reminderFuture;
     private CancellableRequest currentRequest;
 
     public ExerciseCoordinator(Project project) {
@@ -34,20 +43,72 @@ public final class ExerciseCoordinator implements Disposable {
     }
 
     public void generate() {
-        cancelCurrent();
-        String requestId = UUID.randomUUID().toString().substring(0, 8);
+        long requestGeneration = generation.incrementAndGet();
+        cancelPendingWork();
+
         ReviewSession session = ReviewSession.getInstance(project);
+        final ModelRequestConfig config;
+        try {
+            config = ModelRequestConfig.capture(CodeMentorSettings.getInstance());
+        } catch (IllegalArgumentException e) {
+            failImmediately(session, e.getMessage());
+            return;
+        }
+        OutboundRequestGuard.Decision outbound =
+                OutboundRequestGuard.getInstance(project).evaluate(config, null);
+        if (!outbound.allowed()) {
+            failImmediately(session, outbound.reason());
+            return;
+        }
+
+        String requestId = UUID.randomUUID().toString();
+        ReviewContext contextSnapshot = session.getContext();
+        List<Suggestion> suggestionsSnapshot = session.getSuggestions() == null
+                ? List.of()
+                : List.copyOf(session.getSuggestions());
         session.startExercise(requestId);
-        LearningHistoryService.getInstance().findReminders(2, 1)
-                .thenAccept(reminders ->
-                        ApplicationManager.getApplication().invokeLater(
-                                () -> startModelRequest(requestId, reminders)));
+
+        reminderFuture = LearningHistoryService.getInstance().findReminders(2, 1);
+        reminderFuture.whenComplete((reminders, error) ->
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (!isCurrent(requestGeneration)) return;
+                    reminderFuture = null;
+                    if (error != null) {
+                        session.failExercise(requestId, "读取本地学习记录失败，请稍后重试。");
+                        return;
+                    }
+                    startModelRequest(
+                            requestGeneration,
+                            requestId,
+                            config,
+                            contextSnapshot,
+                            suggestionsSnapshot,
+                            reminders == null ? List.of() : reminders);
+                }));
     }
 
-    private void startModelRequest(String requestId, List<KnowledgeReminder> reminders) {
-        if (project.isDisposed()) return;
+    private void startModelRequest(
+            long requestGeneration,
+            String requestId,
+            ModelRequestConfig config,
+            ReviewContext context,
+            List<Suggestion> suggestions,
+            List<KnowledgeReminder> reminders) {
+        if (!isCurrent(requestGeneration)) return;
         ReviewSession session = ReviewSession.getInstance(project);
-        ExerciseTarget target = chooseTarget(session, reminders);
+        OutboundRequestGuard.Decision outbound =
+                OutboundRequestGuard.getInstance(project).evaluate(config, null);
+        if (!outbound.allowed()) {
+            session.failExercise(requestId, outbound.reason());
+            return;
+        }
+        List<Suggestion> eligibleSuggestions = suggestions.stream()
+                .filter(suggestion -> isPracticeCandidate(
+                        suggestion,
+                        session.getFeedback(suggestion.getId()),
+                        session.getVerificationResult(suggestion.getId())))
+                .toList();
+        ExerciseTarget target = chooseTarget(eligibleSuggestions, reminders);
         if (target == null) {
             session.failExercise(
                     requestId,
@@ -55,23 +116,30 @@ public final class ExerciseCoordinator implements Disposable {
             return;
         }
 
-        ReviewContext context = session.getContext();
         JavaWebRole role = context == null
                 ? JavaWebRole.UNKNOWN
                 : context.getJavaWebContext().getRole();
         ExerciseRequest request = new ExerciseRequest(
                 target.knowledgePoint,
                 target.occurrences,
-                CodeMentorSettings.getInstance().getTeachingLevel(),
+                config.teachingLevel(),
                 role);
-        ReviewService service = CodeMentorService.getInstance().getReviewService();
-        currentRequest = service.generateExercise(
+        currentRequest = CodeMentorService.getInstance().getReviewService().generateExercise(
+                config,
                 request,
                 requestId,
                 new ReviewService.ExerciseCallback() {
                     @Override
                     public void onSuccess(Exercise exercise) {
                         ApplicationManager.getApplication().invokeLater(() -> {
+                            if (!isCurrent(requestGeneration)) return;
+                            if (!isFallbackStillEligible(target, session)) {
+                                currentRequest = null;
+                                session.failExercise(
+                                        requestId,
+                                        "这条建议的状态已经变化，旧练习未展示。请重新生成。");
+                                return;
+                            }
                             if (session.completeExercise(requestId, exercise)) {
                                 currentRequest = null;
                             }
@@ -81,6 +149,7 @@ public final class ExerciseCoordinator implements Disposable {
                     @Override
                     public void onFailure(String errorMessage) {
                         ApplicationManager.getApplication().invokeLater(() -> {
+                            if (!isCurrent(requestGeneration)) return;
                             if (session.failExercise(requestId, errorMessage)) {
                                 currentRequest = null;
                             }
@@ -90,23 +159,69 @@ public final class ExerciseCoordinator implements Disposable {
     }
 
     private static ExerciseTarget chooseTarget(
-            ReviewSession session, List<KnowledgeReminder> reminders) {
+            List<Suggestion> suggestions, List<KnowledgeReminder> reminders) {
         if (!reminders.isEmpty()) {
             KnowledgeReminder reminder = reminders.get(0);
             return new ExerciseTarget(
-                    reminder.getKnowledgePoint(), reminder.getOccurrences());
+                    reminder.getKnowledgePoint(), reminder.getOccurrences(), "");
         }
-        List<Suggestion> suggestions = session.getSuggestions();
-        if (suggestions == null) return null;
         return suggestions.stream()
                 .filter(suggestion -> !suggestion.getKnowledgePoint().isBlank())
                 .findFirst()
                 .map(suggestion -> new ExerciseTarget(
-                        suggestion.getKnowledgePoint(), 1))
+                        suggestion.getKnowledgePoint(), 1, suggestion.getId()))
                 .orElse(null);
     }
 
-    private void cancelCurrent() {
+    static boolean isPracticeCandidate(
+            Suggestion suggestion,
+            FeedbackType feedback,
+            VerificationResult verification) {
+        return suggestion != null
+                && suggestion.getCertainty() != Suggestion.Certainty.LOW
+                && feedback != FeedbackType.FALSE_POSITIVE
+                && (verification == null
+                        || (verification.getStatus() != VerificationStatus.RESOLVED
+                                && verification.getStatus() != VerificationStatus.VERIFYING));
+    }
+
+    private static boolean isFallbackStillEligible(
+            ExerciseTarget target, ReviewSession session) {
+        if (target.suggestionId.isBlank()) return true;
+        return session.getSuggestions() != null
+                && session.getSuggestions().stream()
+                        .filter(suggestion -> target.suggestionId.equals(suggestion.getId()))
+                        .findFirst()
+                        .map(suggestion -> isPracticeCandidate(
+                                suggestion,
+                                session.getFeedback(suggestion.getId()),
+                                session.getVerificationResult(suggestion.getId())))
+                        .orElse(false);
+    }
+
+    private static void failImmediately(ReviewSession session, String message) {
+        String requestId = UUID.randomUUID().toString();
+        session.startExercise(requestId);
+        session.failExercise(requestId, message);
+    }
+
+    private boolean isCurrent(long expected) {
+        return !project.isDisposed() && generation.get() == expected;
+    }
+
+    public void cancelCurrent() {
+        generation.incrementAndGet();
+        cancelPendingWork();
+        if (!project.isDisposed()) {
+            ReviewSession.getInstance(project).cancelExercise();
+        }
+    }
+
+    private void cancelPendingWork() {
+        if (reminderFuture != null) {
+            reminderFuture.cancel(true);
+            reminderFuture = null;
+        }
         if (currentRequest != null) {
             currentRequest.cancel();
             currentRequest = null;
@@ -118,5 +233,6 @@ public final class ExerciseCoordinator implements Disposable {
         cancelCurrent();
     }
 
-    private record ExerciseTarget(String knowledgePoint, int occurrences) {}
+    private record ExerciseTarget(
+            String knowledgePoint, int occurrences, String suggestionId) {}
 }

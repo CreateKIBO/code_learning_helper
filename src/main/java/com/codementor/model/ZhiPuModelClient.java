@@ -1,276 +1,299 @@
 package com.codementor.model;
 
-import com.codementor.review.ReviewContext;
-import com.codementor.review.ReviewService;
-import com.codementor.review.Suggestion;
-import com.codementor.review.CancellableRequest;
-import com.codementor.review.FollowUpRequest;
-import com.codementor.review.VerificationRequest;
-import com.codementor.review.VerificationResult;
 import com.codementor.practice.Exercise;
 import com.codementor.practice.ExerciseRequest;
+import com.codementor.privacy.MaskedReviewPayload;
+import com.codementor.review.CancellableRequest;
+import com.codementor.review.FollowUpRequest;
+import com.codementor.review.ReviewContext;
+import com.codementor.review.ReviewResult;
+import com.codementor.review.ReviewService;
+import com.codementor.review.Suggestion;
+import com.codementor.review.VerificationRequest;
+import com.codementor.review.VerificationResult;
 import com.codementor.settings.ApiKeyStore;
-import com.codementor.settings.CodeMentorSettings;
 import com.google.gson.Gson;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.google.gson.JsonParser;
 import com.intellij.openapi.diagnostic.Logger;
+import com.intellij.util.concurrency.AppExecutorUtil;
 
-import java.net.URI;
 import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Future;
 
 /**
- * 智谱 GLM 模型客户端 —— 实现 {@link ReviewService}（方案第 6、9 节）。
- *
- * <p>调用智谱 chat/completions（OpenAI 兼容），把返回的结构化 JSON 解析成建议。
- *
- * <p>线程模型（镜像 FakeReviewService）：
- * <ul>
- *   <li>{@link #review} 立即返回，HTTP 请求在守护线程执行；</li>
- *   <li>回调 {@code onSuccess/onFailure} 在后台线程触发，<b>不</b>跳 EDT（协调器负责）；</li>
- *   <li>{@link InterruptedException} 恢复中断标志，不回调。</li>
- * </ul>
- *
- * <p>健壮性：
- * <ul>
- *   <li>未配置 API Key → 直接 onFailure("请先在设置中配置 API Key")，不发请求；</li>
- *   <li>HTTP 错误 → onFailure 带状态码；</li>
- *   <li>JSON 解析失败 → 重试 1 次（方案第 9 节）；仍失败 → onFailure。</li>
- * </ul>
- *
- * <p>安全（方案第 11 节）：日志只记请求 ID 和耗时，<b>不</b>记代码和 Key。
+ * GLM/OpenAI-compatible model client. Every operation uses the immutable configuration supplied
+ * by its coordinator; mutable settings are never reread in the worker thread.
  */
-public class ZhiPuModelClient implements ReviewService {
+public final class ZhiPuModelClient implements ReviewService {
 
     private static final Logger LOG = Logger.getInstance(ZhiPuModelClient.class);
     private static final Gson GSON = new Gson();
-    private static final int CONNECT_TIMEOUT_MS = 10_000;
-    private static final int REQUEST_TIMEOUT_MS = 30_000;
+    private static final int MAX_TOKENS = 2_400;
 
-    /** 单例 HttpClient，跨请求复用。 */
-    private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofMillis(CONNECT_TIMEOUT_MS))
-            .build();
+    private final ModelHttpTransport transport;
 
-    @Override
-    public CancellableRequest review(ReviewContext context, String requestId, Callback callback) {
-        return startWorker(
-                "CodeMentor-ZhiPu-" + requestId,
-                () -> doReview(context, requestId, callback));
+    public ZhiPuModelClient() {
+        this(HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(10))
+                .build());
+    }
+
+    ZhiPuModelClient(HttpClient client) {
+        transport = new ModelHttpTransport(client);
     }
 
     @Override
-    public CancellableRequest verify(VerificationRequest request, String requestId,
-                                     VerificationCallback callback) {
-        return startWorker(
-                "CodeMentor-ZhiPu-Verify-" + requestId,
-                () -> doVerification(request, requestId, callback));
+    public CancellableRequest review(
+            ModelRequestConfig config,
+            ReviewContext context,
+            String requestId,
+            Callback callback) {
+        return startWorker(() -> doReview(config, context, requestId, callback));
+    }
+
+    @Override
+    public CancellableRequest verify(
+            ModelRequestConfig config,
+            VerificationRequest request,
+            String requestId,
+            VerificationCallback callback) {
+        return startWorker(() -> doVerification(config, request, requestId, callback));
     }
 
     @Override
     public CancellableRequest followUp(
-            FollowUpRequest request, String requestId, FollowUpCallback callback) {
-        return startWorker(
-                "CodeMentor-ZhiPu-FollowUp-" + requestId,
-                () -> doFollowUp(request, requestId, callback));
+            ModelRequestConfig config,
+            FollowUpRequest request,
+            String requestId,
+            FollowUpCallback callback) {
+        return startWorker(() -> doFollowUp(config, request, requestId, callback));
     }
 
     @Override
     public CancellableRequest generateExercise(
-            ExerciseRequest request, String requestId, ExerciseCallback callback) {
-        return startWorker(
-                "CodeMentor-ZhiPu-Exercise-" + requestId,
-                () -> doExercise(request, requestId, callback));
+            ModelRequestConfig config,
+            ExerciseRequest request,
+            String requestId,
+            ExerciseCallback callback) {
+        return startWorker(() -> doExercise(config, request, requestId, callback));
     }
 
-    private static CancellableRequest startWorker(String name, Runnable task) {
-        Thread worker = new Thread(task, name);
-        worker.setDaemon(true);
-        worker.start();
-        return CancellableRequest.forThread(worker);
+    private static CancellableRequest startWorker(Runnable task) {
+        Future<?> future = AppExecutorUtil.getAppExecutorService().submit(task);
+        return CancellableRequest.forFuture(future);
     }
 
-    private void doReview(ReviewContext context, String requestId, Callback callback) {
-        long start = System.currentTimeMillis();
+    private void doReview(
+            ModelRequestConfig config,
+            ReviewContext context,
+            String requestId,
+            Callback callback) {
+        long startedAt = System.currentTimeMillis();
         try {
-            String apiKey = ApiKeyStore.getApiKey();
-            if (apiKey == null || apiKey.isBlank()) {
-                callback.onFailure("请先在 Settings → Tools → CodeMentor 配置 API Key");
+            String apiKey = requireApiKey();
+            if (apiKey == null) {
+                callback.onFailure(apiKeyMissingMessage());
                 return;
             }
-            CodeMentorSettings settings = CodeMentorSettings.getInstance();
-            String url = settings.getApiBaseUrl();
-            String model = settings.getModel();
-
-            // 敏感遮盖后再发
-            String code = PrivacyFilter.mask(context.getModelContext());
-            String projectRules = PrivacyFilter.mask(context.getProjectRules());
-            String systemPrompt =
-                    PromptBuilder.buildSystemPrompt(context.getReviewMode());
+            MaskedReviewPayload payload = MaskedReviewPayload.from(context);
             String userPrompt = PromptBuilder.buildUserPrompt(
-                    code,
-                    settings.getTeachingLevel(),
+                    payload.modelContext(),
+                    config.teachingLevel(),
                     context.getJavaWebContext(),
-                    projectRules,
-                    context.getReviewMode());
-
-            String requestBody = buildRequestBody(model, systemPrompt, userPrompt);
-
-            List<Suggestion> suggestions = sendAndParseWithRetry(
-                    url,
+                    payload.projectRules(),
+                    context.getReviewMode(),
+                    context.isTruncated());
+            String requestBody = buildRequestBody(
+                    config.model(),
+                    PromptBuilder.buildSystemPrompt(context.getReviewMode()),
+                    userPrompt,
+                    true);
+            ReviewResult result = sendAndParseWithRetry(
+                    config,
                     apiKey,
                     requestBody,
                     requestId,
                     "评审",
-                    JsonResponseParser::parse);
-            callback.onSuccess(suggestions);
+                    content -> EvidenceGroundingValidator.requireGrounded(
+                            JsonResponseParser.parseReview(
+                                    content, context.getReviewMode()),
+                            payload.modelContext(),
+                            PrivacyFilter.mask(context.getCode())));
+            if (!Thread.currentThread().isInterrupted()) callback.onSuccess(result);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return; // 不回调
+        } catch (EvidenceGroundingValidator.GroundingException e) {
+            callback.onFailure("模型建议无法从当前可见代码中核对，请重试。");
         } catch (JsonResponseParser.ParseException e) {
-            callback.onFailure("模型返回解析失败：" + e.getMessage()
-                    + "（请重试，或检查代码是否过长）");
-        } catch (ApiException e) {
+            callback.onFailure("模型返回格式不正确：" + e.getMessage());
+        } catch (ModelHttpTransport.ApiException e) {
             callback.onFailure(e.getMessage());
         } catch (Exception e) {
-            LOG.warn("[" + requestId + "] 评审异常", e);
-            callback.onFailure("评审失败：" + e.getMessage());
+            LOG.warn("[" + shortId(requestId) + "] 评审内部异常", e);
+            callback.onFailure("评审失败，请稍后重试");
         } finally {
-            long elapsed = System.currentTimeMillis() - start;
-            LOG.info("[" + requestId + "] 评审耗时 " + elapsed + "ms");
+            logElapsed(requestId, "评审", startedAt);
         }
     }
 
-    private void doVerification(VerificationRequest request, String requestId,
-                                VerificationCallback callback) {
-        long start = System.currentTimeMillis();
+    private void doVerification(
+            ModelRequestConfig config,
+            VerificationRequest request,
+            String requestId,
+            VerificationCallback callback) {
+        long startedAt = System.currentTimeMillis();
         try {
-            String apiKey = ApiKeyStore.getApiKey();
-            if (apiKey == null || apiKey.isBlank()) {
-                callback.onFailure("请先在 Settings → Tools → CodeMentor 配置 API Key");
+            String apiKey = requireApiKey();
+            if (apiKey == null) {
+                callback.onFailure(apiKeyMissingMessage());
                 return;
             }
-            CodeMentorSettings settings = CodeMentorSettings.getInstance();
-            String originalCode = PrivacyFilter.mask(request.getOriginalContext().getCode());
-            String currentCode = PrivacyFilter.mask(request.getCurrentContext().getCode());
+            String userPrompt = PrivacyFilter.mask(PromptBuilder.buildVerificationUserPrompt(
+                    request.getOriginalContext().getModelContext(),
+                    request.getCurrentContext().getModelContext(),
+                    request.getSuggestion()));
+            String maskedCurrentContext = PrivacyFilter.mask(
+                    request.getCurrentContext().getModelContext());
+            String maskedCurrentCode = PrivacyFilter.mask(
+                    request.getCurrentContext().getCode());
             String body = buildRequestBody(
-                    settings.getModel(),
+                    config.model(),
                     PromptBuilder.buildVerificationSystemPrompt(),
-                    PromptBuilder.buildVerificationUserPrompt(
-                            originalCode, currentCode, request.getSuggestion()));
-
+                    userPrompt,
+                    true);
             VerificationResult result = sendAndParseWithRetry(
-                    settings.getApiBaseUrl(),
+                    config,
                     apiKey,
                     body,
                     requestId,
                     "修改验证",
-                    JsonResponseParser::parseVerification);
-            callback.onSuccess(result);
+                    content -> EvidenceGroundingValidator.requireGrounded(
+                            JsonResponseParser.parseVerification(content),
+                            maskedCurrentContext,
+                            maskedCurrentCode));
+            if (!Thread.currentThread().isInterrupted()) callback.onSuccess(result);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } catch (EvidenceGroundingValidator.GroundingException e) {
+            callback.onFailure("模型验证结论无法从当前代码中核对，请重试。");
         } catch (JsonResponseParser.ParseException e) {
-            callback.onFailure("修改验证返回解析失败：" + e.getMessage());
-        } catch (ApiException e) {
+            callback.onFailure("修改验证返回格式不正确：" + e.getMessage());
+        } catch (ModelHttpTransport.ApiException e) {
             callback.onFailure(e.getMessage());
         } catch (Exception e) {
-            LOG.warn("[" + requestId + "] 修改验证异常", e);
-            callback.onFailure("修改验证失败：" + e.getMessage());
+            LOG.warn("[" + shortId(requestId) + "] 修改验证内部异常", e);
+            callback.onFailure("修改验证失败，请稍后重试");
         } finally {
-            LOG.info("[" + requestId + "] 修改验证耗时 "
-                    + (System.currentTimeMillis() - start) + "ms");
+            logElapsed(requestId, "修改验证", startedAt);
         }
     }
 
-    private void doFollowUp(FollowUpRequest request, String requestId,
-                            FollowUpCallback callback) {
-        long start = System.currentTimeMillis();
+    private void doFollowUp(
+            ModelRequestConfig config,
+            FollowUpRequest request,
+            String requestId,
+            FollowUpCallback callback) {
+        long startedAt = System.currentTimeMillis();
         try {
-            String apiKey = ApiKeyStore.getApiKey();
-            if (apiKey == null || apiKey.isBlank()) {
-                callback.onFailure("请先在 Settings → Tools → CodeMentor 配置 API Key");
+            String apiKey = requireApiKey();
+            if (apiKey == null) {
+                callback.onFailure(apiKeyMissingMessage());
                 return;
             }
-            CodeMentorSettings settings = CodeMentorSettings.getInstance();
-            String code = PrivacyFilter.mask(request.getContext().getModelContext());
+            String userPrompt = PrivacyFilter.mask(PromptBuilder.buildFollowUpUserPrompt(
+                    request.getContext().getModelContext(),
+                    request.getSuggestion(),
+                    request.getQuestion(),
+                    config.teachingLevel(),
+                    request.getContext().getJavaWebContext()));
             String body = buildRequestBody(
-                    settings.getModel(),
+                    config.model(),
                     PromptBuilder.buildFollowUpSystemPrompt(),
-                    PromptBuilder.buildFollowUpUserPrompt(
-                            code, request.getSuggestion(), request.getQuestion()));
-            String answer = sendChatRequest(
-                    settings.getApiBaseUrl(), apiKey, body, requestId);
-            callback.onSuccess(answer);
+                    userPrompt,
+                    false);
+            String answer = sendAndParseWithRetry(
+                    config,
+                    apiKey,
+                    body,
+                    requestId,
+                    "追问",
+                    JsonResponseParser::parseFollowUp);
+            if (!Thread.currentThread().isInterrupted()) callback.onSuccess(answer);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-        } catch (Exception e) {
-            LOG.warn("[" + requestId + "] 追问异常", e);
+        } catch (JsonResponseParser.ParseException e) {
+            callback.onFailure("导师回答未满足学习格式：" + e.getMessage());
+        } catch (ModelHttpTransport.ApiException e) {
             callback.onFailure("追问失败：" + e.getMessage());
+        } catch (Exception e) {
+            LOG.warn("[" + shortId(requestId) + "] 追问内部异常", e);
+            callback.onFailure("追问失败，请稍后重试");
         } finally {
-            LOG.info("[" + requestId + "] 追问耗时 "
-                    + (System.currentTimeMillis() - start) + "ms");
+            logElapsed(requestId, "追问", startedAt);
         }
     }
 
     private void doExercise(
-            ExerciseRequest request, String requestId, ExerciseCallback callback) {
-        long start = System.currentTimeMillis();
+            ModelRequestConfig config,
+            ExerciseRequest request,
+            String requestId,
+            ExerciseCallback callback) {
+        long startedAt = System.currentTimeMillis();
         try {
-            String apiKey = ApiKeyStore.getApiKey();
-            if (apiKey == null || apiKey.isBlank()) {
-                callback.onFailure("请先在 Settings → Tools → CodeMentor 配置 API Key");
+            String apiKey = requireApiKey();
+            if (apiKey == null) {
+                callback.onFailure(apiKeyMissingMessage());
                 return;
             }
-            CodeMentorSettings settings = CodeMentorSettings.getInstance();
+            String userPrompt = PrivacyFilter.mask(PromptBuilder.buildExerciseUserPrompt(request));
             String body = buildRequestBody(
-                    settings.getModel(),
+                    config.model(),
                     PromptBuilder.buildExerciseSystemPrompt(),
-                    PromptBuilder.buildExerciseUserPrompt(request));
+                    userPrompt,
+                    true);
             Exercise exercise = sendAndParseWithRetry(
-                    settings.getApiBaseUrl(),
+                    config,
                     apiKey,
                     body,
                     requestId,
                     "小练习",
-                    JsonResponseParser::parseExercise);
-            callback.onSuccess(exercise);
+                    content -> JsonResponseParser.parseExercise(
+                            content, request.getKnowledgePoint()));
+            if (!Thread.currentThread().isInterrupted()) callback.onSuccess(exercise);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (JsonResponseParser.ParseException e) {
-            callback.onFailure("小练习返回解析失败：" + e.getMessage());
-        } catch (ApiException e) {
+            callback.onFailure("小练习返回格式不正确：" + e.getMessage());
+        } catch (ModelHttpTransport.ApiException e) {
             callback.onFailure(e.getMessage());
         } catch (Exception e) {
-            LOG.warn("[" + requestId + "] 生成小练习异常", e);
-            callback.onFailure("生成小练习失败：" + e.getMessage());
+            LOG.warn("[" + shortId(requestId) + "] 小练习内部异常", e);
+            callback.onFailure("生成小练习失败，请稍后重试");
         } finally {
-            LOG.info("[" + requestId + "] 生成小练习耗时 "
-                    + (System.currentTimeMillis() - start) + "ms");
+            logElapsed(requestId, "小练习", startedAt);
         }
     }
 
-    private static <T> T sendAndParseWithRetry(
-            String url,
+    private <T> T sendAndParseWithRetry(
+            ModelRequestConfig config,
             String apiKey,
             String requestBody,
             String requestId,
             String operation,
             StructuredParser<T> parser)
-            throws InterruptedException, ApiException, JsonResponseParser.ParseException {
+            throws InterruptedException,
+                    ModelHttpTransport.ApiException,
+                    JsonResponseParser.ParseException {
         JsonResponseParser.ParseException lastError = null;
         for (int attempt = 1; attempt <= 2; attempt++) {
             try {
-                String content = sendChatRequest(url, apiKey, requestBody, requestId);
-                return parser.parse(content);
+                return parser.parse(transport.send(config, apiKey, requestBody));
             } catch (JsonResponseParser.ParseException e) {
                 lastError = e;
-                LOG.warn("[" + requestId + "] " + operation + " JSON 解析失败（第"
-                        + attempt + "次）: " + e.getMessage());
+                LOG.warn("[" + shortId(requestId) + "] " + operation
+                        + " 响应格式校验失败（第 " + attempt + " 次）");
             }
         }
         throw lastError;
@@ -281,127 +304,105 @@ public class ZhiPuModelClient implements ReviewService {
         T parse(String content) throws JsonResponseParser.ParseException;
     }
 
-    /** 构造 chat/completions 请求体（OpenAI 兼容）。 */
-    private static String buildRequestBody(String model, String systemPrompt, String userPrompt) {
+    static String buildRequestBody(
+            String model,
+            String systemPrompt,
+            String userPrompt,
+            boolean structuredOutput) {
         JsonObject body = new JsonObject();
         body.addProperty("model", model);
         body.addProperty("temperature", 0.3);
-        body.addProperty("max_tokens", 2000);
+        body.addProperty("max_tokens", MAX_TOKENS);
+        if (structuredOutput) {
+            JsonObject responseFormat = new JsonObject();
+            responseFormat.addProperty("type", "json_object");
+            body.add("response_format", responseFormat);
+        }
 
-        JsonObject sysMsg = new JsonObject();
-        sysMsg.addProperty("role", "system");
-        sysMsg.addProperty("content", systemPrompt);
-
-        JsonObject userMsg = new JsonObject();
-        userMsg.addProperty("role", "user");
-        userMsg.addProperty("content", userPrompt);
-
-        var messages = new com.google.gson.JsonArray();
-        messages.add(sysMsg);
-        messages.add(userMsg);
+        JsonArray messages = new JsonArray();
+        messages.add(message("system", systemPrompt));
+        messages.add(message("user", userPrompt));
         body.add("messages", messages);
         return GSON.toJson(body);
     }
 
-    /**
-     * 发送 chat/completions 请求，返回 choices[0].message.content。
-     * 业务异常（超时、HTTP 非 2xx、响应缺字段）抛 {@link ApiException}，不重试。
-     */
-    private static String sendChatRequest(String url, String apiKey, String requestBody, String requestId)
-            throws InterruptedException, ApiException {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .timeout(Duration.ofMillis(REQUEST_TIMEOUT_MS))
-                .header("Authorization", "Bearer " + apiKey)
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                .build();
-
-        HttpResponse<String> response;
-        try {
-            response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
-        } catch (java.net.http.HttpTimeoutException e) {
-            // HttpTimeoutException 是 IOException 子类，必须先于 IOException 捕获
-            throw new ApiException("请求超时（" + (REQUEST_TIMEOUT_MS / 1000) + "秒）");
-        } catch (java.io.IOException e) {
-            throw new ApiException("网络错误：" + e.getMessage());
-        }
-
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            String body = response.body();
-            String hint = extractApiError(body);
-            throw new ApiException("服务端返回 " + response.statusCode()
-                    + (hint != null ? "：" + hint : ""));
-        }
-
-        return extractContent(response.body());
+    private static JsonObject message(String role, String content) {
+        JsonObject message = new JsonObject();
+        message.addProperty("role", role);
+        message.addProperty("content", content);
+        return message;
     }
 
-    /** 从 chat/completions 响应里取 choices[0].message.content。 */
-    private static String extractContent(String responseBody) throws ApiException {
-        try {
-            JsonObject root = JsonParser.parseString(responseBody).getAsJsonObject();
-            var choices = root.getAsJsonArray("choices");
-            if (choices == null || choices.isEmpty()) {
-                throw new ApiException("响应缺少 choices（可能是内容触发安全策略）");
-            }
-            JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
-            if (message == null || !message.has("content")) {
-                throw new ApiException("响应缺少 message.content");
-            }
-            return message.get("content").getAsString();
-        } catch (ApiException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new ApiException("响应解析失败：" + e.getMessage());
-        }
+    private static String requireApiKey() {
+        String apiKey = ApiKeyStore.getApiKey();
+        return apiKey == null || apiKey.isBlank() ? null : apiKey;
     }
 
-    /** 从错误响应里提取 message 字段（智谱错误格式），失败返回 null。 */
-    private static String extractApiError(String responseBody) {
-        try {
-            JsonObject root = JsonParser.parseString(responseBody).getAsJsonObject();
-            if (root.has("error")) {
-                JsonObject err = root.getAsJsonObject("error");
-                if (err != null && err.has("message")) {
-                    return err.get("message").getAsString();
-                }
-            }
-            if (root.has("msg")) return root.get("msg").getAsString();
-            return null;
-        } catch (Exception e) {
-            return null;
-        }
+    private static String apiKeyMissingMessage() {
+        return "请先在 Settings → Tools → CodeMentor 配置 API Key";
     }
 
-    // ==================== 设置页"测试连接"用 ====================
+    private static void logElapsed(String requestId, String operation, long startedAt) {
+        LOG.info("[" + shortId(requestId) + "] " + operation + "耗时 "
+                + (System.currentTimeMillis() - startedAt) + "ms");
+    }
 
-    /** 测试连接结果。 */
+    private static String shortId(String requestId) {
+        if (requestId == null) return "unknown";
+        return requestId.substring(0, Math.min(8, requestId.length()));
+    }
+
     public static final class TestResult {
         public final boolean success;
         public final String message;
+
         public TestResult(boolean success, String message) {
             this.success = success;
             this.message = message;
         }
     }
 
-    /**
-     * 用指定配置发一个最小请求，验证连通性。供设置页"测试连接"调用。
-     * 必须在后台线程调用（HTTP + 阻塞）。
-     */
-    public static TestResult testConnection(String url, String apiKey, String model) {
+    /** Performs a minimal blocking request. Call from a background task only. */
+    public static TestResult testConnection(
+            String url,
+            String apiKey,
+            String model,
+            boolean allowInsecureLocalEndpoint) {
+        ModelEndpointValidator.Result endpoint =
+                ModelEndpointValidator.validate(url, allowInsecureLocalEndpoint);
+        if (!endpoint.valid()) return new TestResult(false, endpoint.errorMessage());
+        String modelError = ModelEndpointValidator.validateModel(model);
+        if (!modelError.isEmpty()) return new TestResult(false, modelError);
+        if (apiKey == null || apiKey.isBlank()) {
+            return new TestResult(false, "API Key 不能为空");
+        }
         try {
-            String body = buildRequestBody(model, PromptBuilder.buildSystemPrompt(), "回复 OK 即可");
-            String content = sendChatRequest(url, apiKey, body, "test");
-            return new TestResult(true, "模型：" + model + "，返回长度 " + content.length());
+            ModelRequestConfig config = new ModelRequestConfig(
+                    endpoint.normalizedEndpoint(),
+                    model.trim(),
+                    com.codementor.settings.CodeMentorSettings.TeachingLevel.JAVAWEB,
+                    ModelRequestConfig.CURRENT_PROMPT_SCHEMA);
+            ModelHttpTransport transport = new ModelHttpTransport(HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .build());
+            String body = buildRequestBody(
+                    config.model(),
+                    PromptBuilder.buildSystemPrompt(),
+                    "只回复 OK",
+                    false);
+            String content = transport.send(config, apiKey.trim(), body);
+            return new TestResult(true, "模型：" + config.model()
+                    + "，返回长度 " + content.length());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return new TestResult(false, "连接测试已取消");
         } catch (Exception e) {
             return new TestResult(false, e.getMessage());
         }
     }
 
-    /** 业务异常：HTTP 错误、超时、响应缺失字段等，不触发重试。 */
-    private static final class ApiException extends Exception {
-        public ApiException(String message) { super(message); }
+    /** Backward-compatible secure default used by older callers. */
+    public static TestResult testConnection(String url, String apiKey, String model) {
+        return testConnection(url, apiKey, model, false);
     }
 }

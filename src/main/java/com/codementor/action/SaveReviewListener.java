@@ -1,8 +1,11 @@
 package com.codementor.action;
 
 import com.codementor.review.ReviewCoordinator;
+import com.codementor.model.ModelRequestConfig;
+import com.codementor.settings.CodeMentorProjectConsent;
 import com.codementor.settings.CodeMentorSettings;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.fileEditor.FileDocumentManagerListener;
@@ -22,7 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** 默认关闭的保存触发器；防抖后只评审最后实际编辑、且指纹尚未缓存的方法。 */
-public final class SaveReviewListener implements FileDocumentManagerListener {
+public final class SaveReviewListener implements FileDocumentManagerListener, Disposable {
 
     private static final long DEBOUNCE_MILLIS = 750;
     private final Map<Document, ScheduledFuture<?>> pending = new ConcurrentHashMap<>();
@@ -31,8 +34,7 @@ public final class SaveReviewListener implements FileDocumentManagerListener {
     public void beforeDocumentSaving(@NotNull Document document) {
         CodeMentorSettings settings = CodeMentorSettings.getInstance();
         if (!settings.isReviewEnabled()
-                || !settings.isSaveReviewEnabled()
-                || !settings.hasConsentedToSend()) {
+                || !settings.isSaveReviewEnabled()) {
             return;
         }
         VirtualFile file = FileDocumentManager.getInstance().getFile(document);
@@ -62,8 +64,7 @@ public final class SaveReviewListener implements FileDocumentManagerListener {
                     // 触发前重检，避免无谓的 PSI 工作和潜在绕过（P1-1）。
                     CodeMentorSettings current = CodeMentorSettings.getInstance();
                     if (!current.isReviewEnabled()
-                            || !current.isSaveReviewEnabled()
-                            || !current.hasConsentedToSend()) {
+                            || !current.isSaveReviewEnabled()) {
                         return;
                     }
                     ApplicationManager.getApplication().invokeLater(
@@ -80,6 +81,15 @@ public final class SaveReviewListener implements FileDocumentManagerListener {
             if (project.isDisposed()) continue;
             var editor = FileEditorManager.getInstance(project).getSelectedTextEditor();
             if (editor == null || editor.getDocument() != document) continue;
+            final ModelRequestConfig config;
+            try {
+                config = ModelRequestConfig.capture(CodeMentorSettings.getInstance());
+            } catch (IllegalArgumentException ignored) {
+                return;
+            }
+            if (!CodeMentorProjectConsent.getInstance(project).hasConsentFor(config)) {
+                return;
+            }
             PsiDocumentManager documentManager = PsiDocumentManager.getInstance(project);
             documentManager.commitDocument(document);
             PsiFile psiFile = documentManager.getPsiFile(document);
@@ -92,5 +102,13 @@ public final class SaveReviewListener implements FileDocumentManagerListener {
                             modifiedOffset);
             return;
         }
+    }
+
+    @Override
+    public void dispose() {
+        for (ScheduledFuture<?> future : pending.values()) {
+            future.cancel(false);
+        }
+        pending.clear();
     }
 }

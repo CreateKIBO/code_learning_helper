@@ -2,7 +2,7 @@
     <!-- ============ 插件元信息 ============ -->
     <id>com.codementor</id>
     <name>CodeMentor</name>
-    <vendor email="local@codementor">CodeMentor Personal</vendor>
+    <vendor url="https://github.com/CreateKIBO/code_learning_helper">Kibo</vendor>
 
     <!-- ============ 兼容的 IDE 范围 ============ -->
     <!-- 仅支持 IDEA 2024.1.x（241.*）。具体值由 Gradle 构建时注入，这里留空占位。 -->
@@ -10,11 +10,15 @@
 
     <!-- ============ 描述 ============ -->
     <description><![CDATA[
-        CodeMentor is a private Java and JavaWeb learning coach for IntelliJ IDEA.
-        <h3>CodeMentor 个人版</h3>
+        CodeMentor is an AI-assisted Java learning coach for IntelliJ IDEA.
+        <h3>CodeMentor：IntelliJ IDEA 内的 Java 学习教练</h3>
         <p>住在 IntelliJ IDEA 里的 Java 学习教练。</p>
         <p>选中代码或把光标放在方法内：Alt+M 评审写法，Alt+Shift+M 解释代码。</p>
-        <p>支持 JavaWeb 分层识别、修改验证、发送前隐私预览、本地学习统计与薄弱知识点小练习。</p>
+        <p>建议遵循“代码证据 → 思考提示 → 最小下一步 → 自测”的学习路径；支持按需讲解、追问，以及完整方法评审后的修改验证。</p>
+        <p>支持 JavaWeb 分层识别、发送前隐私预览、本地学习统计，以及提示逐条揭示的薄弱知识点小练习。</p>
+        <p>代码上下文只会在用户主动操作或明确开启保存触发后发送到用户配置的模型服务。</p>
+        <p><a href="https://github.com/CreateKIBO/code_learning_helper/blob/main/PRIVACY.md">隐私说明</a> ·
+        <a href="https://github.com/CreateKIBO/code_learning_helper/blob/main/docs/INSTALL.md">安装与数据清理</a></p>
     ]]></description>
 
     <!-- ============ 依赖的内置插件 ============ -->
