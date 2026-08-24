@@ -61,13 +61,12 @@ intellijPlatform {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
         changeNotes = """
-            <h3>1.2.5 — 2026-08-24</h3>
+            <h3>${providers.gradleProperty("pluginVersion").get()} — 2026-08-24</h3>
             <ul>
-                <li>Recovers the review and verification sessions when context extraction fails unexpectedly, instead of leaving the tool window idle or stuck in VERIFYING with the button disabled.</li>
-                <li>Runs model HTTP requests on a dedicated bounded thread pool so long review operations no longer occupy the shared application executor.</li>
-                <li>Reuses one HttpClient for Settings connection tests and releases the model worker pool on IDE shutdown.</li>
-                <li>Caches repeated-knowledge reminders for 45 seconds so successful reviews no longer re-read the full learning history every time.</li>
-                <li>Documents CompletableFuture cancellation semantics as "discard the result" instead of interrupting the running task.</li>
+                <li>Consolidates the four model operations onto one shared execution skeleton and moves the Settings connection probe into a dedicated ConnectionTester class.</li>
+                <li>Centralizes coordinator configuration capture and outbound guard checks in a single tested helper used by review, verification, follow-up and exercise flows.</li>
+                <li>Extracts the learning-summary HTML builder into a pure, unit-tested formatter.</li>
+                <li>Derives the evidence length bounds inside prompts from the validator constants, and names temperature, cache capacity and reminder thresholds.</li>
             </ul>
         """.trimIndent()
 

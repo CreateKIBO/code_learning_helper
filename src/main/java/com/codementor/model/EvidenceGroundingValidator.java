@@ -9,8 +9,9 @@ import java.util.regex.Pattern;
 /** Rejects model suggestions whose claimed evidence cannot be found in the sent context. */
 final class EvidenceGroundingValidator {
 
-    private static final int MIN_NORMALIZED_EVIDENCE_CHARS = 8;
-    private static final int MAX_NORMALIZED_EVIDENCE_CHARS = 160;
+    /** 证据长度的合法区间；PromptBuilder 用同一常量生成提示词，避免校验与提示脱节。 */
+    static final int MIN_NORMALIZED_EVIDENCE_CHARS = 8;
+    static final int MAX_NORMALIZED_EVIDENCE_CHARS = 160;
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     private EvidenceGroundingValidator() {}

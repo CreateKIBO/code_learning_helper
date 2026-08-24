@@ -5,16 +5,15 @@ import com.codementor.history.KnowledgeReminder;
 import com.codementor.history.LearningHistoryService;
 import com.codementor.javaweb.JavaWebRole;
 import com.codementor.model.ModelRequestConfig;
-import com.codementor.privacy.OutboundRequestGuard;
 import com.codementor.review.CancellableRequest;
 import com.codementor.review.FeedbackType;
+import com.codementor.review.ModelTaskGuards;
 import com.codementor.review.ReviewContext;
 import com.codementor.review.ReviewService;
 import com.codementor.review.ReviewSession;
 import com.codementor.review.Suggestion;
 import com.codementor.review.VerificationResult;
 import com.codementor.review.VerificationStatus;
-import com.codementor.settings.CodeMentorSettings;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
@@ -28,6 +27,10 @@ import java.util.concurrent.atomic.AtomicLong;
 /** Generates one bounded practice task from local learning history. */
 @Service(Service.Level.PROJECT)
 public final class ExerciseCoordinator implements Disposable {
+
+    /** 出题用的复习提醒聚合参数（重复出现≥2 次取第 1 条）。 */
+    private static final int REMINDER_MIN_OCCURRENCES = 2;
+    private static final int REMINDER_LIMIT = 1;
 
     private final Project project;
     private final AtomicLong generation = new AtomicLong();
@@ -47,17 +50,12 @@ public final class ExerciseCoordinator implements Disposable {
         cancelPendingWork();
 
         ReviewSession session = ReviewSession.getInstance(project);
-        final ModelRequestConfig config;
-        try {
-            config = ModelRequestConfig.capture(CodeMentorSettings.getInstance());
-        } catch (IllegalArgumentException e) {
-            failImmediately(session, e.getMessage());
-            return;
-        }
-        OutboundRequestGuard.Decision outbound =
-                OutboundRequestGuard.getInstance(project).evaluate(config, null);
-        if (!outbound.allowed()) {
-            failImmediately(session, outbound.reason());
+        final ModelRequestConfig config = ModelTaskGuards.captureConfig(
+                message -> failImmediately(session, message));
+        if (config == null) return;
+        if (!ModelTaskGuards.guardOutbound(
+                project, config, null,
+                reason -> failImmediately(session, reason))) {
             return;
         }
 
@@ -68,7 +66,8 @@ public final class ExerciseCoordinator implements Disposable {
                 : List.copyOf(session.getSuggestions());
         session.startExercise(requestId);
 
-        reminderFuture = LearningHistoryService.getInstance().findReminders(2, 1);
+        reminderFuture = LearningHistoryService.getInstance()
+                .findReminders(REMINDER_MIN_OCCURRENCES, REMINDER_LIMIT);
         reminderFuture.whenComplete((reminders, error) ->
                 ApplicationManager.getApplication().invokeLater(() -> {
                     if (!isCurrent(requestGeneration)) return;
@@ -96,10 +95,9 @@ public final class ExerciseCoordinator implements Disposable {
             List<KnowledgeReminder> reminders) {
         if (!isCurrent(requestGeneration)) return;
         ReviewSession session = ReviewSession.getInstance(project);
-        OutboundRequestGuard.Decision outbound =
-                OutboundRequestGuard.getInstance(project).evaluate(config, null);
-        if (!outbound.allowed()) {
-            session.failExercise(requestId, outbound.reason());
+        if (!ModelTaskGuards.guardOutbound(
+                project, config, null,
+                reason -> session.failExercise(requestId, reason))) {
             return;
         }
         List<Suggestion> eligibleSuggestions = suggestions.stream()

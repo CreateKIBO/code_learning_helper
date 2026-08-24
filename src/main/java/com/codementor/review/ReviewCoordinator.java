@@ -40,13 +40,18 @@ public final class ReviewCoordinator implements Disposable {
 
     private static final Logger LOG = Logger.getInstance(ReviewCoordinator.class);
 
+    /** 命中缓存的最大评审结果数与复习提醒的聚合参数（重复出现≥3 次取前 3 条）。 */
+    private static final int CACHE_CAPACITY = 50;
+    private static final int REMINDER_MIN_OCCURRENCES = 3;
+    private static final int REMINDER_LIMIT = 3;
+
     public enum Trigger {
         MANUAL,
         SAVE
     }
 
     private final Project project;
-    private final ReviewCache cache = new ReviewCache(50);
+    private final ReviewCache cache = new ReviewCache(CACHE_CAPACITY);
     private final AtomicLong generation = new AtomicLong();
 
     private CompletableFuture<String> rulesFuture;
@@ -90,15 +95,12 @@ public final class ReviewCoordinator implements Disposable {
         CodeMentorSettings settings = CodeMentorSettings.getInstance();
         if (!settings.isReviewEnabled()) return;
 
-        final ModelRequestConfig config;
-        try {
-            config = ModelRequestConfig.capture(settings);
-        } catch (IllegalArgumentException e) {
+        final ModelRequestConfig config = ModelTaskGuards.captureConfig(message -> {
             if (trigger == Trigger.MANUAL) {
-                Messages.showErrorDialog(project, e.getMessage(), "CodeMentor 配置无效");
+                Messages.showErrorDialog(project, message, "CodeMentor 配置无效");
             }
-            return;
-        }
+        });
+        if (config == null) return;
 
         CodeMentorProjectConsent consent = CodeMentorProjectConsent.getInstance(project);
         if (trigger == Trigger.SAVE
@@ -349,7 +351,7 @@ public final class ReviewCoordinator implements Disposable {
         if (!fromCache) {
             history.recordReview(project, context, suggestions, learningReviewId);
         }
-        history.findReminders(3, 3).thenAccept(reminders ->
+        history.findReminders(REMINDER_MIN_OCCURRENCES, REMINDER_LIMIT).thenAccept(reminders ->
                 ApplicationManager.getApplication().invokeLater(() -> {
                     ReviewSession currentSession = ReviewSession.getInstance(project);
                     if (!project.isDisposed()

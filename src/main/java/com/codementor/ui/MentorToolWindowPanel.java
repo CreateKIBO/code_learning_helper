@@ -2,7 +2,6 @@ package com.codementor.ui;
 
 import com.codementor.history.LearningHistoryService;
 import com.codementor.history.KnowledgeReminder;
-import com.codementor.history.LearningSummary;
 import com.codementor.practice.Exercise;
 import com.codementor.practice.ExerciseCoordinator;
 import com.codementor.practice.ExerciseResult;
@@ -39,6 +38,8 @@ import com.intellij.ui.components.JBTextArea;
 import com.intellij.util.ui.AsyncProcessIcon;
 import com.intellij.util.ui.JBUI;
 import org.jetbrains.annotations.NotNull;
+
+import static com.codementor.ui.SummaryHtmlFormatter.escape;
 
 import javax.accessibility.AccessibleContext;
 import javax.swing.*;
@@ -792,7 +793,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                     }
                     Messages.showInfoMessage(
                             project,
-                            learningSummaryHtml(summary),
+                            SummaryHtmlFormatter.html(summary),
                             "CodeMentor 学习统计");
                 }));
         refreshActivityIndicator();
@@ -849,33 +850,6 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                     }
                 }));
         refreshActivityIndicator();
-    }
-
-    private static String learningSummaryHtml(LearningSummary summary) {
-        StringBuilder html = new StringBuilder("<html><body style='width:440px'>")
-                .append("<b>本地学习摘要</b><br><br>")
-                .append("累计建议：").append(summary.getReviewedSuggestions()).append("<br>")
-                .append("完成修改验证：").append(summary.getCompletedVerifications())
-                .append("，解决率：").append(summary.getResolutionRatePercent()).append("%<br>")
-                .append("查看讲解：").append(summary.getExplanationViews())
-                .append("，查看率：").append(summary.getExplanationViewRatePercent()).append("%<br>")
-                .append("反馈：有帮助 ").append(summary.getHelpfulFeedback())
-                .append(" / 没帮助 ").append(summary.getNotHelpfulFeedback())
-                .append(" / 误报 ").append(summary.getFalsePositiveFeedback());
-        if (!summary.getWeakKnowledgePoints().isEmpty()) {
-            html.append("<br><br><b>当前薄弱知识点：</b><ul>");
-            for (KnowledgeReminder reminder : summary.getWeakKnowledgePoints()) {
-                html.append("<li>")
-                        .append(escape(reminder.getKnowledgePoint()))
-                        .append("（待巩固 ")
-                        .append(reminder.getOccurrences())
-                        .append(" 次）</li>");
-            }
-            html.append("</ul>");
-        }
-        return html.append(
-                "<br><small>统计仅来自本机事件，不包含完整源代码。</small></body></html>")
-                .toString();
     }
 
     // ---------- 小工具 ----------
@@ -946,13 +920,6 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
             accessibleContext.setAccessibleName("CodeMentor 加载状态");
             accessibleContext.setAccessibleDescription(description);
         }
-    }
-
-    private static String escape(String s) {
-        if (s == null) return "";
-        return s.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;");
     }
 
     private static void cancel(CompletableFuture<?> future) {

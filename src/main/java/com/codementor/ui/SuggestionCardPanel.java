@@ -272,7 +272,8 @@ final class SuggestionCardPanel extends JBPanel<SuggestionCardPanel> {
     private void askCustomFollowUp() {
         String question = Messages.showInputDialog(
                 project,
-                "针对《" + suggestion.getTitle() + "》继续追问（最多 2000 个字符）：",
+                "针对《" + suggestion.getTitle() + "》继续追问（最多 "
+                        + FollowUpCoordinator.MAX_QUESTION_CHARS + " 个字符）：",
                 "CodeMentor 追问",
                 Messages.getQuestionIcon());
         if (question != null && !question.isBlank()) askFollowUp(question);

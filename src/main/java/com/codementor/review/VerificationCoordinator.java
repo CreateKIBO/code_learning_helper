@@ -7,7 +7,6 @@ import com.codementor.history.LearningHistoryService;
 import com.codementor.model.ModelRequestConfig;
 import com.codementor.model.PrivacyFilter;
 import com.codementor.privacy.OutboundRequestGuard;
-import com.codementor.settings.CodeMentorSettings;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
@@ -63,17 +62,14 @@ public final class VerificationCoordinator implements Disposable {
             return;
         }
 
-        final ModelRequestConfig config;
-        try {
-            config = ModelRequestConfig.capture(CodeMentorSettings.getInstance());
-        } catch (IllegalArgumentException e) {
-            failImmediately(session, suggestion, e.getMessage());
-            return;
-        }
-        OutboundRequestGuard.Decision outbound =
-                OutboundRequestGuard.getInstance(project).evaluate(config, originalContext);
-        if (!outbound.allowed()) {
-            failImmediately(session, suggestion, outbound.reason());
+        final ModelRequestConfig config = ModelTaskGuards.captureConfig(
+                message -> failImmediately(session, suggestion, message));
+        if (config == null) return;
+        if (!ModelTaskGuards.guardOutbound(
+                project,
+                config,
+                originalContext,
+                reason -> failImmediately(session, suggestion, reason))) {
             return;
         }
 

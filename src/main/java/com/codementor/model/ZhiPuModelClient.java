@@ -24,6 +24,7 @@ import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -44,10 +45,10 @@ public final class ZhiPuModelClient implements ReviewService {
             "上一次响应没有产生符合要求的最终答案。请立即直接回答，"
                     + "不要输出思考过程，并严格遵守上一条消息的格式要求。";
     static final Duration MENTOR_REQUEST_TIMEOUT = Duration.ofSeconds(120);
-    static final Duration CONNECTION_TEST_TIMEOUT = Duration.ofSeconds(30);
+    static final Duration CONNECT_TIMEOUT = Duration.ofSeconds(10);
 
-    /** Java 17 的 HttpClient 无法显式关闭；连接测试复用同一实例，避免反复点测试累积线程。 */
-    private static volatile HttpClient connectionTestClient;
+    private static final double TEMPERATURE_DEFAULT = 0.3;
+    private static final double TEMPERATURE_RETRY = 0.1;
 
     private final ModelHttpTransport transport;
     private final Supplier<String> apiKeySupplier;
@@ -55,7 +56,7 @@ public final class ZhiPuModelClient implements ReviewService {
 
     public ZhiPuModelClient() {
         this(HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
+                .connectTimeout(CONNECT_TIMEOUT)
                 .build(), ApiKeyStore::getApiKey);
     }
 
@@ -130,52 +131,42 @@ public final class ZhiPuModelClient implements ReviewService {
             ReviewContext context,
             String requestId,
             Callback callback) {
-        long startedAt = System.currentTimeMillis();
-        try {
-            String apiKey = requireApiKey();
-            if (apiKey == null) {
-                callback.onFailure(apiKeyMissingMessage());
-                return;
-            }
-            MaskedReviewPayload payload = MaskedReviewPayload.from(context);
-            String userPrompt = PromptBuilder.buildUserPrompt(
-                    payload.modelContext(),
-                    config.teachingLevel(),
-                    context.getJavaWebContext(),
-                    payload.projectRules(),
-                    context.getReviewMode(),
-                    context.isTruncated());
-            String requestBody = buildRequestBody(
-                    config,
-                    PromptBuilder.buildSystemPrompt(context.getReviewMode()),
-                    userPrompt,
-                    true);
-            ReviewResult result = sendAndParseWithRetry(
-                    config,
-                    apiKey,
-                    requestBody,
-                    requestId,
-                    "评审",
-                    content -> EvidenceGroundingValidator.requireGrounded(
-                            JsonResponseParser.parseReview(
-                                    content, context.getReviewMode()),
+        executeOperation(
+                requestId,
+                "评审",
+                new OperationMessages(
+                        "模型建议无法从当前可见代码中核对，请重试。",
+                        "模型返回格式不正确：",
+                        "",
+                        "评审失败，请稍后重试"),
+                apiKey -> {
+                    MaskedReviewPayload payload = MaskedReviewPayload.from(context);
+                    String userPrompt = PromptBuilder.buildUserPrompt(
                             payload.modelContext(),
-                            PrivacyFilter.mask(context.getCode())));
-            if (!Thread.currentThread().isInterrupted()) callback.onSuccess(result);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (EvidenceGroundingValidator.GroundingException e) {
-            callback.onFailure("模型建议无法从当前可见代码中核对，请重试。");
-        } catch (JsonResponseParser.ParseException e) {
-            callback.onFailure("模型返回格式不正确：" + e.getMessage());
-        } catch (ModelHttpTransport.ApiException e) {
-            callback.onFailure(e.getMessage());
-        } catch (Exception e) {
-            LOG.warn("[" + shortId(requestId) + "] 评审内部异常", e);
-            callback.onFailure("评审失败，请稍后重试");
-        } finally {
-            logElapsed(requestId, "评审", startedAt);
-        }
+                            config.teachingLevel(),
+                            context.getJavaWebContext(),
+                            payload.projectRules(),
+                            context.getReviewMode(),
+                            context.isTruncated());
+                    String requestBody = buildRequestBody(
+                            config,
+                            PromptBuilder.buildSystemPrompt(context.getReviewMode()),
+                            userPrompt,
+                            true);
+                    return sendAndParseWithRetry(
+                            config,
+                            apiKey,
+                            requestBody,
+                            requestId,
+                            "评审",
+                            content -> EvidenceGroundingValidator.requireGrounded(
+                                    JsonResponseParser.parseReview(
+                                            content, context.getReviewMode()),
+                                    payload.modelContext(),
+                                    PrivacyFilter.mask(context.getCode())));
+                },
+                callback::onSuccess,
+                callback::onFailure);
     }
 
     private void doVerification(
@@ -183,51 +174,42 @@ public final class ZhiPuModelClient implements ReviewService {
             VerificationRequest request,
             String requestId,
             VerificationCallback callback) {
-        long startedAt = System.currentTimeMillis();
-        try {
-            String apiKey = requireApiKey();
-            if (apiKey == null) {
-                callback.onFailure(apiKeyMissingMessage());
-                return;
-            }
-            String userPrompt = PrivacyFilter.mask(PromptBuilder.buildVerificationUserPrompt(
-                    request.getOriginalContext().getModelContext(),
-                    request.getCurrentContext().getModelContext(),
-                    request.getSuggestion()));
-            String maskedCurrentContext = PrivacyFilter.mask(
-                    request.getCurrentContext().getModelContext());
-            String maskedCurrentCode = PrivacyFilter.mask(
-                    request.getCurrentContext().getCode());
-            String body = buildRequestBody(
-                    config,
-                    PromptBuilder.buildVerificationSystemPrompt(),
-                    userPrompt,
-                    true);
-            VerificationResult result = sendAndParseWithRetry(
-                    config,
-                    apiKey,
-                    body,
-                    requestId,
-                    "修改验证",
-                    content -> EvidenceGroundingValidator.requireGrounded(
-                            JsonResponseParser.parseVerification(content),
-                            maskedCurrentContext,
-                            maskedCurrentCode));
-            if (!Thread.currentThread().isInterrupted()) callback.onSuccess(result);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (EvidenceGroundingValidator.GroundingException e) {
-            callback.onFailure("模型验证结论无法从当前代码中核对，请重试。");
-        } catch (JsonResponseParser.ParseException e) {
-            callback.onFailure("修改验证返回格式不正确：" + e.getMessage());
-        } catch (ModelHttpTransport.ApiException e) {
-            callback.onFailure(e.getMessage());
-        } catch (Exception e) {
-            LOG.warn("[" + shortId(requestId) + "] 修改验证内部异常", e);
-            callback.onFailure("修改验证失败，请稍后重试");
-        } finally {
-            logElapsed(requestId, "修改验证", startedAt);
-        }
+        executeOperation(
+                requestId,
+                "修改验证",
+                new OperationMessages(
+                        "模型验证结论无法从当前代码中核对，请重试。",
+                        "修改验证返回格式不正确：",
+                        "",
+                        "修改验证失败，请稍后重试"),
+                apiKey -> {
+                    String userPrompt = PrivacyFilter.mask(
+                            PromptBuilder.buildVerificationUserPrompt(
+                                    request.getOriginalContext().getModelContext(),
+                                    request.getCurrentContext().getModelContext(),
+                                    request.getSuggestion()));
+                    String maskedCurrentContext = PrivacyFilter.mask(
+                            request.getCurrentContext().getModelContext());
+                    String maskedCurrentCode = PrivacyFilter.mask(
+                            request.getCurrentContext().getCode());
+                    String body = buildRequestBody(
+                            config,
+                            PromptBuilder.buildVerificationSystemPrompt(),
+                            userPrompt,
+                            true);
+                    return sendAndParseWithRetry(
+                            config,
+                            apiKey,
+                            body,
+                            requestId,
+                            "修改验证",
+                            content -> EvidenceGroundingValidator.requireGrounded(
+                                    JsonResponseParser.parseVerification(content),
+                                    maskedCurrentContext,
+                                    maskedCurrentCode));
+                },
+                callback::onSuccess,
+                callback::onFailure);
     }
 
     private void doFollowUp(
@@ -235,44 +217,37 @@ public final class ZhiPuModelClient implements ReviewService {
             FollowUpRequest request,
             String requestId,
             FollowUpCallback callback) {
-        long startedAt = System.currentTimeMillis();
-        try {
-            String apiKey = requireApiKey();
-            if (apiKey == null) {
-                callback.onFailure(apiKeyMissingMessage());
-                return;
-            }
-            String userPrompt = PrivacyFilter.mask(PromptBuilder.buildFollowUpUserPrompt(
-                    request.getContext().getModelContext(),
-                    request.getSuggestion(),
-                    request.getQuestion(),
-                    config.teachingLevel(),
-                    request.getContext().getJavaWebContext()));
-            String body = buildRequestBody(
-                    config,
-                    PromptBuilder.buildFollowUpSystemPrompt(),
-                    userPrompt,
-                    false);
-            String answer = sendAndParseWithRetry(
-                    config,
-                    apiKey,
-                    body,
-                    requestId,
-                    "追问",
-                    JsonResponseParser::parseFollowUp);
-            if (!Thread.currentThread().isInterrupted()) callback.onSuccess(answer);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        } catch (JsonResponseParser.ParseException e) {
-            callback.onFailure("导师回答未满足学习格式：" + e.getMessage());
-        } catch (ModelHttpTransport.ApiException e) {
-            callback.onFailure("追问失败：" + e.getMessage());
-        } catch (Exception e) {
-            LOG.warn("[" + shortId(requestId) + "] 追问内部异常", e);
-            callback.onFailure("追问失败，请稍后重试");
-        } finally {
-            logElapsed(requestId, "追问", startedAt);
-        }
+        executeOperation(
+                requestId,
+                "追问",
+                new OperationMessages(
+                        // 追问不经过证据校验器，不会抛出 GroundingException；占位保持骨架统一。
+                        "",
+                        "导师回答未满足学习格式：",
+                        "追问失败：",
+                        "追问失败，请稍后重试"),
+                apiKey -> {
+                    String userPrompt = PrivacyFilter.mask(PromptBuilder.buildFollowUpUserPrompt(
+                            request.getContext().getModelContext(),
+                            request.getSuggestion(),
+                            request.getQuestion(),
+                            config.teachingLevel(),
+                            request.getContext().getJavaWebContext()));
+                    String body = buildRequestBody(
+                            config,
+                            PromptBuilder.buildFollowUpSystemPrompt(),
+                            userPrompt,
+                            false);
+                    return sendAndParseWithRetry(
+                            config,
+                            apiKey,
+                            body,
+                            requestId,
+                            "追问",
+                            JsonResponseParser::parseFollowUp);
+                },
+                callback::onSuccess,
+                callback::onFailure);
     }
 
     private void doExercise(
@@ -280,40 +255,80 @@ public final class ZhiPuModelClient implements ReviewService {
             ExerciseRequest request,
             String requestId,
             ExerciseCallback callback) {
+        executeOperation(
+                requestId,
+                "小练习",
+                new OperationMessages(
+                        // 小练习不经过证据校验器，不会抛出 GroundingException；占位保持骨架统一。
+                        "",
+                        "小练习返回格式不正确：",
+                        "",
+                        "生成小练习失败，请稍后重试"),
+                apiKey -> {
+                    String userPrompt = PrivacyFilter.mask(
+                            PromptBuilder.buildExerciseUserPrompt(request));
+                    String body = buildRequestBody(
+                            config,
+                            PromptBuilder.buildExerciseSystemPrompt(),
+                            userPrompt,
+                            true);
+                    return sendAndParseWithRetry(
+                            config,
+                            apiKey,
+                            body,
+                            requestId,
+                            "小练习",
+                            content -> JsonResponseParser.parseExercise(
+                                    content, request.getKnowledgePoint()));
+                },
+                callback::onSuccess,
+                callback::onFailure);
+    }
+
+    /** 四个模型操作的公共执行骨架：取 Key、执行任务、统一的失败分类与耗时日志。 */
+    private <T> void executeOperation(
+            String requestId,
+            String operation,
+            OperationMessages messages,
+            ApiKeyTask<T> task,
+            Consumer<T> onSuccess,
+            Consumer<String> onFailure) {
         long startedAt = System.currentTimeMillis();
         try {
             String apiKey = requireApiKey();
             if (apiKey == null) {
-                callback.onFailure(apiKeyMissingMessage());
+                onFailure.accept(apiKeyMissingMessage());
                 return;
             }
-            String userPrompt = PrivacyFilter.mask(PromptBuilder.buildExerciseUserPrompt(request));
-            String body = buildRequestBody(
-                    config,
-                    PromptBuilder.buildExerciseSystemPrompt(),
-                    userPrompt,
-                    true);
-            Exercise exercise = sendAndParseWithRetry(
-                    config,
-                    apiKey,
-                    body,
-                    requestId,
-                    "小练习",
-                    content -> JsonResponseParser.parseExercise(
-                            content, request.getKnowledgePoint()));
-            if (!Thread.currentThread().isInterrupted()) callback.onSuccess(exercise);
+            T result = task.run(apiKey);
+            if (!Thread.currentThread().isInterrupted()) onSuccess.accept(result);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } catch (EvidenceGroundingValidator.GroundingException e) {
+            onFailure.accept(messages.groundingFailure());
         } catch (JsonResponseParser.ParseException e) {
-            callback.onFailure("小练习返回格式不正确：" + e.getMessage());
+            onFailure.accept(messages.parsePrefix() + e.getMessage());
         } catch (ModelHttpTransport.ApiException e) {
-            callback.onFailure(e.getMessage());
+            onFailure.accept(messages.apiPrefix().isEmpty()
+                    ? e.getMessage()
+                    : messages.apiPrefix() + e.getMessage());
         } catch (Exception e) {
-            LOG.warn("[" + shortId(requestId) + "] 小练习内部异常", e);
-            callback.onFailure("生成小练习失败，请稍后重试");
+            LOG.warn("[" + shortId(requestId) + "] " + operation + "内部异常", e);
+            onFailure.accept(messages.genericFailure());
         } finally {
-            logElapsed(requestId, "小练习", startedAt);
+            logElapsed(requestId, operation, startedAt);
         }
+    }
+
+    private record OperationMessages(
+            String groundingFailure,
+            String parsePrefix,
+            String apiPrefix,
+            String genericFailure) {}
+
+    @FunctionalInterface
+    private interface ApiKeyTask<T> {
+        T run(String apiKey) throws Exception;
     }
 
     private <T> T sendAndParseWithRetry(
@@ -365,6 +380,27 @@ public final class ZhiPuModelClient implements ReviewService {
         throw new IllegalStateException("unreachable retry state");
     }
 
+    /** 供 ConnectionTester 复用同一重试骨架；固定使用评审 JSON 解析器。 */
+    static ReviewResult sendAndParseForConnectionTest(
+            ModelHttpTransport transport,
+            ModelRequestConfig config,
+            String apiKey,
+            String requestBody,
+            String requestId,
+            String operation)
+            throws InterruptedException,
+                    ModelHttpTransport.ApiException,
+                    JsonResponseParser.ParseException {
+        return sendAndParseWithRetry(
+                transport,
+                config,
+                apiKey,
+                requestBody,
+                requestId,
+                operation,
+                JsonResponseParser::parseReview);
+    }
+
     @FunctionalInterface
     private interface StructuredParser<T> {
         T parse(String content) throws JsonResponseParser.ParseException;
@@ -379,7 +415,7 @@ public final class ZhiPuModelClient implements ReviewService {
         boolean officialDeepSeek =
                 ModelEndpointValidator.isOfficialDeepSeekEndpoint(config.endpoint());
         body.addProperty("model", config.model());
-        body.addProperty("temperature", 0.3);
+        body.addProperty("temperature", TEMPERATURE_DEFAULT);
         body.addProperty(
                 "max_tokens",
                 structuredOutput && officialDeepSeek
@@ -413,7 +449,7 @@ public final class ZhiPuModelClient implements ReviewService {
                 ? STRUCTURED_RETRY_INSTRUCTION
                 : TEXT_RETRY_INSTRUCTION;
         lastUserMessage.addProperty("content", originalPrompt + "\n\n" + retryInstruction);
-        body.addProperty("temperature", 0.1);
+        body.addProperty("temperature", TEMPERATURE_RETRY);
         return GSON.toJson(body);
     }
 
@@ -441,96 +477,5 @@ public final class ZhiPuModelClient implements ReviewService {
     private static String shortId(String requestId) {
         if (requestId == null) return "unknown";
         return requestId.substring(0, Math.min(8, requestId.length()));
-    }
-
-    public static final class TestResult {
-        public final boolean success;
-        public final String message;
-
-        public TestResult(boolean success, String message) {
-            this.success = success;
-            this.message = message;
-        }
-    }
-
-    private static HttpClient connectionTestClient() {
-        HttpClient client = connectionTestClient;
-        if (client != null) return client;
-        synchronized (ZhiPuModelClient.class) {
-            if (connectionTestClient == null) {
-                connectionTestClient = HttpClient.newBuilder()
-                        .connectTimeout(Duration.ofSeconds(10))
-                        .build();
-            }
-            return connectionTestClient;
-        }
-    }
-
-    /** Performs a minimal blocking request. Call from a background task only. */
-    public static TestResult testConnection(
-            String url,
-            String apiKey,
-            String model,
-            boolean allowInsecureLocalEndpoint) {
-        ModelEndpointValidator.Result endpoint =
-                ModelEndpointValidator.validate(url, allowInsecureLocalEndpoint);
-        if (!endpoint.valid()) return new TestResult(false, endpoint.errorMessage());
-        String modelError = ModelEndpointValidator.validateModelForEndpoint(
-                model, endpoint.normalizedEndpoint());
-        if (!modelError.isEmpty()) return new TestResult(false, modelError);
-        if (apiKey == null || apiKey.isBlank()) {
-            return new TestResult(false, "API Key 不能为空");
-        }
-        try {
-            ModelRequestConfig config = new ModelRequestConfig(
-                    endpoint.normalizedEndpoint(),
-                    model.trim(),
-                    com.codementor.settings.CodeMentorSettings.TeachingLevel.JAVAWEB,
-                    ModelRequestConfig.CURRENT_PROMPT_SCHEMA);
-            ModelHttpTransport transport =
-                    new ModelHttpTransport(connectionTestClient(), CONNECTION_TEST_TIMEOUT);
-            String body = buildRequestBody(
-                    config,
-                    "你正在执行 CodeMentor 连接兼容性测试，不分析真实项目。"
-                            + "只输出严格 JSON："
-                            + "{\"summary\":\"连接正常\",\"suggestions\":[]}",
-                    "请返回上述 JSON，不要 markdown 或额外文字。",
-                    true);
-            ReviewResult result = sendAndParseWithRetry(
-                    transport,
-                    config,
-                    apiKey.trim(),
-                    body,
-                    "connection",
-                    "导师协议测试",
-                    JsonResponseParser::parseReview);
-            return new TestResult(true, "模型：" + config.model()
-                    + "，导师 JSON 协议可用（摘要长度 "
-                    + result.summary().length() + "）");
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return new TestResult(false, "连接测试已取消");
-        } catch (ModelHttpTransport.EmptyContentException e) {
-            return new TestResult(
-                    false,
-                    "网络与鉴权已通过，但导师协议没有最终内容：" + e.getMessage()
-                            + "；实际请求：" + endpoint.normalizedEndpoint());
-        } catch (JsonResponseParser.ParseException e) {
-            return new TestResult(
-                    false,
-                    "网络与鉴权已通过，但导师 JSON 协议不兼容：" + e.getMessage()
-                            + "；实际请求：" + endpoint.normalizedEndpoint());
-        } catch (Exception e) {
-            String message = e.getMessage() == null || e.getMessage().isBlank()
-                    ? "连接测试失败，服务端未返回详细信息"
-                    : e.getMessage();
-            return new TestResult(
-                    false, message + "；实际请求：" + endpoint.normalizedEndpoint());
-        }
-    }
-
-    /** Backward-compatible secure default used by older callers. */
-    public static TestResult testConnection(String url, String apiKey, String model) {
-        return testConnection(url, apiKey, model, false);
     }
 }

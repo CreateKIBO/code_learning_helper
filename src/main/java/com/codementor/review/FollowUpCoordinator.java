@@ -2,8 +2,6 @@ package com.codementor.review;
 
 import com.codementor.CodeMentorService;
 import com.codementor.model.ModelRequestConfig;
-import com.codementor.privacy.OutboundRequestGuard;
-import com.codementor.settings.CodeMentorSettings;
 import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
@@ -17,7 +15,8 @@ import java.util.UUID;
 @Service(Service.Level.PROJECT)
 public final class FollowUpCoordinator implements Disposable {
 
-    private static final int MAX_QUESTION_CHARS = 2_000;
+    /** 追问输入上限；提示文案与此处共用同一常量。 */
+    public static final int MAX_QUESTION_CHARS = 2_000;
 
     private final Project project;
     private final Map<String, PendingFollowUp> pending = new HashMap<>();
@@ -40,21 +39,19 @@ public final class FollowUpCoordinator implements Disposable {
         if (normalizedQuestion.length() > MAX_QUESTION_CHARS) {
             failImmediately(
                     session, suggestion, normalizedQuestion,
-                    "追问最多 2000 个字符，请缩短后重试。");
+                    "追问最多 " + MAX_QUESTION_CHARS + " 个字符，请缩短后重试。");
             return;
         }
 
-        final ModelRequestConfig config;
-        try {
-            config = ModelRequestConfig.capture(CodeMentorSettings.getInstance());
-        } catch (IllegalArgumentException e) {
-            failImmediately(session, suggestion, normalizedQuestion, e.getMessage());
-            return;
-        }
-        OutboundRequestGuard.Decision outbound =
-                OutboundRequestGuard.getInstance(project).evaluate(config, context);
-        if (!outbound.allowed()) {
-            failImmediately(session, suggestion, normalizedQuestion, outbound.reason());
+        final ModelRequestConfig config = ModelTaskGuards.captureConfig(
+                message -> failImmediately(session, suggestion, normalizedQuestion, message));
+        if (config == null) return;
+        if (!ModelTaskGuards.guardOutbound(
+                project,
+                config,
+                context,
+                reason -> failImmediately(
+                        session, suggestion, normalizedQuestion, reason))) {
             return;
         }
 

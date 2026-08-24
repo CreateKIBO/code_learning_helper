@@ -1,7 +1,7 @@
 package com.codementor.settings;
 
+import com.codementor.model.ConnectionTester;
 import com.codementor.model.ModelEndpointValidator;
-import com.codementor.model.ZhiPuModelClient;
 import com.codementor.review.ReviewCoordinator;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
@@ -385,16 +385,16 @@ public final class CodeMentorConfigurable implements Configurable {
         long expectedGeneration = connectionGeneration.incrementAndGet();
         try {
             connectionTestFuture = AppExecutorUtil.getAppExecutorService().submit(() -> {
-                ZhiPuModelClient.TestResult result;
+                ConnectionTester.TestResult result;
                 try {
                     String key = enteredKey.isEmpty() ? ApiKeyStore.getApiKey() : enteredKey;
-                    result = ZhiPuModelClient.testConnection(
+                    result = ConnectionTester.testConnection(
                             endpoint.normalizedEndpoint(), key, model, allowLocalHttp);
                 } catch (RuntimeException error) {
-                    result = new ZhiPuModelClient.TestResult(
+                    result = new ConnectionTester.TestResult(
                             false, "无法读取 PasswordSafe 或启动连接测试。");
                 }
-                final ZhiPuModelClient.TestResult completedResult = result;
+                final ConnectionTester.TestResult completedResult = result;
                 invokeOnSettingsUi(() -> {
                     if (disposed || connectionGeneration.get() != expectedGeneration
                             || testConnectionButton == null) return;

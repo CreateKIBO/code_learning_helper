@@ -24,10 +24,10 @@ class ZhiPuModelClientConnectionTest {
 
     @Test
     void mentorOperationsHaveMoreTimeThanTheMinimalConnectionProbe() {
-        assertEquals(Duration.ofSeconds(30), ZhiPuModelClient.CONNECTION_TEST_TIMEOUT);
+        assertEquals(Duration.ofSeconds(30), ConnectionTester.CONNECTION_TEST_TIMEOUT);
         assertEquals(Duration.ofSeconds(120), ZhiPuModelClient.MENTOR_REQUEST_TIMEOUT);
         assertTrue(ZhiPuModelClient.MENTOR_REQUEST_TIMEOUT.compareTo(
-                ZhiPuModelClient.CONNECTION_TEST_TIMEOUT) > 0);
+                ConnectionTester.CONNECTION_TEST_TIMEOUT) > 0);
     }
 
     @AfterEach
@@ -53,7 +53,7 @@ class ZhiPuModelClientConnectionTest {
         });
         server.start();
 
-        ZhiPuModelClient.TestResult result = ZhiPuModelClient.testConnection(
+        ConnectionTester.TestResult result = ConnectionTester.testConnection(
                 "http://127.0.0.1:" + server.getAddress().getPort() + "/v1",
                 "test-key",
                 "test-model",
@@ -67,7 +67,7 @@ class ZhiPuModelClientConnectionTest {
 
     @Test
     void connectionTestRejectsRetiredOfficialDeepSeekModelsBeforeNetworkUse() {
-        ZhiPuModelClient.TestResult result = ZhiPuModelClient.testConnection(
+        ConnectionTester.TestResult result = ConnectionTester.testConnection(
                 "https://api.deepseek.com",
                 "test-key",
                 "deepseek-chat",

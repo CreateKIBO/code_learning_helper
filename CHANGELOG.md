@@ -2,6 +2,33 @@
 
 本项目使用语义化版本号。本文件只记录已经落到代码、测试或发布工程中的变更。
 
+## [1.2.6] - 2026-08-24
+
+### Model client consolidation
+
+- 评审、验证、追问、小练习四个模型操作合并到统一的 `executeOperation` 执行骨架：取 Key、任务执行、失败分类（中断/证据不实/格式/传输/内部异常）与耗时日志只维护一份，行为与 1.2.5 完全一致。
+- 设置页连接测试迁移到独立的 `ConnectionTester` 类，`ZhiPuModelClient` 回归纯 `ReviewService` 实现；提示词温度、重试温度、连接超时提升为命名常量。
+
+### Coordinator guard reuse
+
+- 新增 `ModelTaskGuards`：配置捕获（`captureConfig`）与出站守卫（`guardOutbound`）集中一处，评审、验证、追问、小练习四条链路全部改用；守卫文案与策略不再四份复制。
+- 评审缓存容量（50）与两条链路的复习提醒阈值（评审 3/3、出题 2/1）提升为命名常量；追问长度上限常量与两处提示文案共用。
+
+### Prompt/validator decoupling
+
+- 提示词中"证据必须为连续 8~160 个字符"的三处硬编码改为由 `EvidenceGroundingValidator` 的同一常量插值生成；今后调整证据长度校验不会再与提示词脱节。生成内容与之前逐字节一致。
+
+### UI extraction and tests
+
+- 学习摘要 HTML 拼接从 `MentorToolWindowPanel` 拆出为纯函数 `SummaryHtmlFormatter`，并补齐单元测试（计数/比率渲染、薄弱知识点转义、零分母）。
+- 新增 `ModelTaskGuardsTest`（平台夹具）覆盖无效配置、有效配置、缺授权拒绝与授权后放行四条路径。
+- `changeNotes` 中的版本号改为从 `gradle.properties` 读取，消除三处版本维护点之一。
+
+### Release engineering
+
+- 版本更新为 `1.2.6`，发布流水线通过 132 项测试（新增 8 项）、项目配置与插件结构检查；Plugin Verifier 1.409 判定 IDEA 2024.1.1（IC-241.15989.150）`Compatible`。
+- ZIP 内嵌版本/兼容范围及 LICENSE、NOTICE、PRIVACY、图标均已核对；产物为 277,275 bytes，SHA-256 `D56C8A658161D3086EB67B45DA0584665EA2004E10816FE0487CFCD301D861A5`。本地产物未执行 Marketplace 签名或发布。
+
 ## [1.2.5] - 2026-08-24
 
 ### Context extraction failure recovery
