@@ -17,8 +17,10 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.components.Service;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.psi.PsiFile;
@@ -29,11 +31,14 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /** Coordinates target capture, privacy consent, caching, cancellation and review session updates. */
 @Service(Service.Level.PROJECT)
 public final class ReviewCoordinator implements Disposable {
+
+    private static final Logger LOG = Logger.getInstance(ReviewCoordinator.class);
 
     public enum Trigger {
         MANUAL,
@@ -170,12 +175,27 @@ public final class ReviewCoordinator implements Disposable {
             long requestGeneration,
             long initialStamp,
             String projectRules) {
+        AtomicBoolean extractionFailed = new AtomicBoolean(false);
         contextFuture = ReadAction.<ReviewContext>nonBlocking(() -> {
-                    if (!isCurrent(requestGeneration) || !psiFile.isValid()) return null;
-                    ReviewContext context = PsiContextExtractor.extract(project, target, psiFile);
-                    return context == null
-                            ? null
-                            : context.withProjectRules(projectRules).withReviewMode(mode);
+                    try {
+                        if (!isCurrent(requestGeneration) || !psiFile.isValid()) return null;
+                        ReviewContext context =
+                                PsiContextExtractor.extract(project, target, psiFile);
+                        return context == null
+                                ? null
+                                : context.withProjectRules(projectRules).withReviewMode(mode);
+                    } catch (ProcessCanceledException e) {
+                        throw e;
+                    } catch (RuntimeException | Error e) {
+                        // finishOnUiThread 只在成功时回调；异常必须就地转成失败分支，
+                        // 否则手动评审管线会永久卡住、保存触发评审被持续抑制。
+                        if (extractionFailed.compareAndSet(false, true)) {
+                            LOG.error("评审上下文采集失败", e);
+                            ApplicationManager.getApplication().invokeLater(() ->
+                                    onContextExtractionFailed(requestGeneration, trigger));
+                        }
+                        return null;
+                    }
                 })
                 .withDocumentsCommitted(project)
                 .expireWhen(() -> !isCurrent(requestGeneration)
@@ -188,8 +208,22 @@ public final class ReviewCoordinator implements Disposable {
                                 context,
                                 trigger,
                                 config,
-                                requestGeneration))
+                                requestGeneration,
+                                extractionFailed.get()))
                 .submit(AppExecutorUtil.getAppExecutorService());
+    }
+
+    private void onContextExtractionFailed(long requestGeneration, Trigger trigger) {
+        if (!isCurrent(requestGeneration)) {
+            finishManualPipeline(requestGeneration);
+            return;
+        }
+        contextFuture = null;
+        finishManualPipeline(requestGeneration);
+        ReviewSession.getInstance(project).reset();
+        if (trigger == Trigger.MANUAL) {
+            Messages.showErrorDialog(project, "读取代码上下文失败，请重试。", "CodeMentor");
+        }
     }
 
     private void onContextCollected(
@@ -197,11 +231,14 @@ public final class ReviewCoordinator implements Disposable {
             ReviewContext context,
             Trigger trigger,
             ModelRequestConfig config,
-            long requestGeneration) {
+            long requestGeneration,
+            boolean extractionFailed) {
         if (!isCurrent(requestGeneration)) return;
         contextFuture = null;
         if (context == null) {
             finishManualPipeline(requestGeneration);
+            // 采集异常的提示与恢复由 onContextExtractionFailed 负责，不显示“未选中代码”。
+            if (extractionFailed) return;
             if (trigger == Trigger.MANUAL) resetAndExplainMissingTarget();
             return;
         }
@@ -418,7 +455,9 @@ public final class ReviewCoordinator implements Disposable {
     private void cancelPipeline() {
         clearActiveManualPipeline();
         if (rulesFuture != null) {
-            rulesFuture.cancel(true);
+            // CompletableFuture.cancel 的 mayInterruptIfRunning 参数被忽略，任务不会真被中断；
+            // cancel(false) 如实表达“放弃结果”，真实中断由任务内部的 InterruptedException 路径处理。
+            rulesFuture.cancel(false);
             rulesFuture = null;
         }
         if (contextFuture != null) {

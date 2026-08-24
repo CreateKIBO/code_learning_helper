@@ -3,6 +3,7 @@ package com.codementor;
 import com.codementor.model.ZhiPuModelClient;
 import com.codementor.review.FakeReviewService;
 import com.codementor.review.ReviewService;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
 
@@ -16,9 +17,9 @@ import com.intellij.openapi.components.Service;
  * {@link FakeReviewService} 保留但默认不用，仅供本地演示和自动测试。
  */
 @Service(Service.Level.APP)
-public final class CodeMentorService {
+public final class CodeMentorService implements Disposable {
 
-    private final ReviewService reviewService = new ZhiPuModelClient();
+    private final ZhiPuModelClient reviewService = new ZhiPuModelClient();
 
     public static CodeMentorService getInstance() {
         return ApplicationManager.getApplication().getService(CodeMentorService.class);
@@ -32,5 +33,10 @@ public final class CodeMentorService {
     /** 获取本地假服务；不会因真实模型失败而自动切换，避免掩盖配置问题。 */
     public ReviewService getFakeService() {
         return new FakeReviewService();
+    }
+
+    @Override
+    public void dispose() {
+        reviewService.shutdown();
     }
 }

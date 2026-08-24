@@ -26,8 +26,19 @@ public final class LearningHistoryService implements Disposable {
 
     private static final Logger LOG = Logger.getInstance(LearningHistoryService.class);
 
+    /**
+     * 提醒是统计性提示数据；45 秒内允许复用上一次全量聚合结果，
+     * 避免每次评审成功都重新读取并反序列化整份历史（最大约 2×4MB）。
+     */
+    private static final long REMINDER_CACHE_TTL_NANOS = TimeUnit.SECONDS.toNanos(45);
+
     private final ExecutorService executor;
     private final LearningEventStore store;
+    private final Object reminderLock = new Object();
+    private List<KnowledgeReminder> cachedReminders;
+    private int cachedRemindersMinOccurrences = -1;
+    private int cachedRemindersLimit = -1;
+    private long cachedRemindersAtNanos;
 
     public LearningHistoryService() {
         this(
@@ -103,9 +114,25 @@ public final class LearningHistoryService implements Disposable {
 
     public CompletableFuture<List<KnowledgeReminder>> findReminders(
             int minimumOccurrences, int limit) {
+        synchronized (reminderLock) {
+            if (cachedReminders != null
+                    && cachedRemindersMinOccurrences == minimumOccurrences
+                    && cachedRemindersLimit == limit
+                    && System.nanoTime() - cachedRemindersAtNanos < REMINDER_CACHE_TTL_NANOS) {
+                return CompletableFuture.completedFuture(cachedReminders);
+            }
+        }
         return CompletableFuture.supplyAsync(() -> {
             try {
-                return store.findRepeatedKnowledgePoints(minimumOccurrences, limit);
+                List<KnowledgeReminder> reminders =
+                        store.findRepeatedKnowledgePoints(minimumOccurrences, limit);
+                synchronized (reminderLock) {
+                    cachedReminders = reminders;
+                    cachedRemindersMinOccurrences = minimumOccurrences;
+                    cachedRemindersLimit = limit;
+                    cachedRemindersAtNanos = System.nanoTime();
+                }
+                return reminders;
             } catch (IOException e) {
                 LOG.warn("读取复习提醒失败", e);
                 return List.of();
@@ -128,6 +155,10 @@ public final class LearningHistoryService implements Disposable {
         return CompletableFuture.runAsync(() -> {
             try {
                 store.clear();
+                // 历史已清空，缓存的提醒必须立即失效，不能等 TTL 自然过期。
+                synchronized (reminderLock) {
+                    cachedReminders = null;
+                }
             } catch (IOException e) {
                 throw new IllegalStateException("清除学习记录失败：" + e.getMessage(), e);
             }

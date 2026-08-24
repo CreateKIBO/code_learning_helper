@@ -2,6 +2,30 @@
 
 本项目使用语义化版本号。本文件只记录已经落到代码、测试或发布工程中的变更。
 
+## [1.2.5] - 2026-08-24
+
+### Context extraction failure recovery
+
+- 评审与修改验证的上下文采集（非阻塞 ReadAction）出现意外异常时，现在立即把对应会话转入可重试的失败分支，不再让工具窗口停在空状态或卡在 VERIFYING 且验证按钮被禁用。
+- 取消与 `ProcessCanceledException` 仍按正常中断处理；真实异常会带请求上下文写入日志。被新请求取代的失败采集只清理自己的手动管线状态，不会抑制保存触发的评审。
+
+### Model IO isolation
+
+- 模型 HTTP 请求迁移到专用有界线程池（上限 4），评审、验证、追问和练习并发时不再占满 `AppExecutorUtil` 共享池、饿死平台上其他短时任务；线程池随应用服务生命周期在 IDE 关闭时释放。
+- 设置页连接测试复用同一个 `HttpClient` 实例，不再每次点击都创建无法显式关闭的新客户端（Java 17 无 `close()`）。
+
+### Learning history efficiency
+
+- 重复知识点提醒按相同参数缓存 45 秒，连续评审不再每次都全量读取并聚合最多 2×4MB 的 JSONL 历史。
+- 清除本地学习历史会使提醒缓存立即失效；TTL 内提醒最多比最新事件晚 45 秒，属于可接受的统计性提示延迟。
+
+### Release engineering
+
+- 各处 `CompletableFuture.cancel(true)` 改为 `cancel(false)` 并注释真实语义：只放弃结果，运行中的任务不会被中断。
+- 面板 `dispose()` 改用构造时缓存的 `ReviewSession` 引用退订，项目关闭时不再依赖可能已销毁的服务容器查找。
+- 版本更新为 `1.2.5`，发布流水线通过 124 项测试、项目配置与插件结构检查；Plugin Verifier 1.409 判定 IDEA 2024.1.1（IC-241.15989.150）`Compatible`。
+- ZIP 内嵌版本/兼容范围及 LICENSE、NOTICE、PRIVACY、图标均已核对；产物为 272,186 bytes，SHA-256 `2A9C91850300909E1065D62CF768566D6D4554339DC1AC2297EA680372118D13`。本地产物未执行 Marketplace 签名或发布。
+
 ## [1.2.4] - 2026-08-24
 
 ### Empty model content recovery

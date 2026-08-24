@@ -22,6 +22,7 @@ import com.intellij.util.concurrency.AppExecutorUtil;
 import java.net.http.HttpClient;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.function.Supplier;
 
@@ -45,8 +46,12 @@ public final class ZhiPuModelClient implements ReviewService {
     static final Duration MENTOR_REQUEST_TIMEOUT = Duration.ofSeconds(120);
     static final Duration CONNECTION_TEST_TIMEOUT = Duration.ofSeconds(30);
 
+    /** Java 17 的 HttpClient 无法显式关闭；连接测试复用同一实例，避免反复点测试累积线程。 */
+    private static volatile HttpClient connectionTestClient;
+
     private final ModelHttpTransport transport;
     private final Supplier<String> apiKeySupplier;
+    private final ExecutorService workerExecutor;
 
     public ZhiPuModelClient() {
         this(HttpClient.newBuilder()
@@ -59,8 +64,22 @@ public final class ZhiPuModelClient implements ReviewService {
     }
 
     ZhiPuModelClient(HttpClient client, Supplier<String> apiKeySupplier) {
+        this(client, apiKeySupplier, AppExecutorUtil.createBoundedApplicationPoolExecutor(
+                "CodeMentor Model IO", 4));
+    }
+
+    ZhiPuModelClient(
+            HttpClient client,
+            Supplier<String> apiKeySupplier,
+            ExecutorService workerExecutor) {
         transport = new ModelHttpTransport(client, MENTOR_REQUEST_TIMEOUT);
         this.apiKeySupplier = Objects.requireNonNull(apiKeySupplier, "apiKeySupplier");
+        this.workerExecutor = Objects.requireNonNull(workerExecutor, "workerExecutor");
+    }
+
+    /** 释放模型 IO 线程池；由 CodeMentorService 在应用关闭时调用。 */
+    public void shutdown() {
+        workerExecutor.shutdown();
     }
 
     @Override
@@ -99,8 +118,10 @@ public final class ZhiPuModelClient implements ReviewService {
         return startWorker(() -> doExercise(config, request, requestId, callback));
     }
 
-    private static CancellableRequest startWorker(Runnable task) {
-        Future<?> future = AppExecutorUtil.getAppExecutorService().submit(task);
+    private CancellableRequest startWorker(Runnable task) {
+        // 模型请求是长达 120 秒的阻塞 IO；专用有界池避免评审/验证/追问/练习并发时
+        // 占满 AppExecutorUtil 共享池，饿死平台上其他短时任务。
+        Future<?> future = workerExecutor.submit(task);
         return CancellableRequest.forFuture(future);
     }
 
@@ -432,6 +453,19 @@ public final class ZhiPuModelClient implements ReviewService {
         }
     }
 
+    private static HttpClient connectionTestClient() {
+        HttpClient client = connectionTestClient;
+        if (client != null) return client;
+        synchronized (ZhiPuModelClient.class) {
+            if (connectionTestClient == null) {
+                connectionTestClient = HttpClient.newBuilder()
+                        .connectTimeout(Duration.ofSeconds(10))
+                        .build();
+            }
+            return connectionTestClient;
+        }
+    }
+
     /** Performs a minimal blocking request. Call from a background task only. */
     public static TestResult testConnection(
             String url,
@@ -453,9 +487,8 @@ public final class ZhiPuModelClient implements ReviewService {
                     model.trim(),
                     com.codementor.settings.CodeMentorSettings.TeachingLevel.JAVAWEB,
                     ModelRequestConfig.CURRENT_PROMPT_SCHEMA);
-            ModelHttpTransport transport = new ModelHttpTransport(HttpClient.newBuilder()
-                    .connectTimeout(Duration.ofSeconds(10))
-                    .build(), CONNECTION_TEST_TIMEOUT);
+            ModelHttpTransport transport =
+                    new ModelHttpTransport(connectionTestClient(), CONNECTION_TEST_TIMEOUT);
             String body = buildRequestBody(
                     config,
                     "你正在执行 CodeMentor 连接兼容性测试，不分析真实项目。"

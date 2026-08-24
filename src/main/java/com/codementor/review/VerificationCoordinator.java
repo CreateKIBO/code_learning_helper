@@ -13,11 +13,13 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.application.ReadAction;
 import com.intellij.openapi.components.Service;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.editor.event.DocumentEvent;
 import com.intellij.openapi.editor.event.DocumentListener;
 import com.intellij.openapi.fileEditor.FileEditorManager;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
 import com.intellij.psi.PsiDocumentManager;
 import com.intellij.psi.PsiFile;
@@ -29,10 +31,13 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Re-reads the original target and verifies one suggestion without mixing review generations. */
 @Service(Service.Level.PROJECT)
 public final class VerificationCoordinator implements Disposable {
+
+    private static final Logger LOG = Logger.getInstance(VerificationCoordinator.class);
 
     private final Project project;
     private final Map<String, PendingVerification> pending = new HashMap<>();
@@ -108,8 +113,24 @@ public final class VerificationCoordinator implements Disposable {
                 learningReviewId);
         pending.put(suggestion.getId(), verification);
 
+        AtomicBoolean extractionFailed = new AtomicBoolean(false);
         Future<?> collection = ReadAction.<ReviewContext>nonBlocking(
-                        () -> PsiContextExtractor.extract(project, target, psiFile))
+                        () -> {
+                            try {
+                                return PsiContextExtractor.extract(project, target, psiFile);
+                            } catch (ProcessCanceledException e) {
+                                throw e;
+                            } catch (RuntimeException | Error e) {
+                                // finishOnUiThread 只在成功时回调；异常必须就地转成失败分支，
+                                // 否则会话停在 VERIFYING、验证按钮被禁用且无法恢复。
+                                if (extractionFailed.compareAndSet(false, true)) {
+                                    LOG.error("修改验证上下文采集失败", e);
+                                    ApplicationManager.getApplication().invokeLater(() ->
+                                            verification.cancel("读取代码上下文失败，请重试。"));
+                                }
+                                return null;
+                            }
+                        })
                 .withDocumentsCommitted(project)
                 .coalesceBy(this, suggestion.getId())
                 .expireWith(project)
@@ -120,7 +141,8 @@ public final class VerificationCoordinator implements Disposable {
                                 currentContext,
                                 suggestion,
                                 config,
-                                initialStamp))
+                                initialStamp,
+                                extractionFailed.get()))
                 .submit(AppExecutorUtil.getAppExecutorService());
         verification.setCollection(collection);
     }
@@ -130,9 +152,15 @@ public final class VerificationCoordinator implements Disposable {
             ReviewContext currentContext,
             Suggestion suggestion,
             ModelRequestConfig config,
-            long initialStamp) {
+            long initialStamp,
+            boolean extractionFailed) {
         if (!isPending(verification) || !verification.isSameReview()) return;
         verification.clearCollection();
+        if (extractionFailed) {
+            // 采集异常的恢复由 verify 里的失败分支负责，统一给出可重试提示。
+            verification.cancel("读取代码上下文失败，请重试。");
+            return;
+        }
         if (verification.document.getModificationStamp() != initialStamp) {
             verification.cancel("采集期间代码再次变化，请停止输入后重试。");
             return;

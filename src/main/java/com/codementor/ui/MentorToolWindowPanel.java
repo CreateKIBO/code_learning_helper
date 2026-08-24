@@ -81,6 +81,8 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
     private static final Color COLOR_EXPIRY_TITLE = new JBColor(new Color(0xE6, 0x51, 0x00), new Color(0xFF, 0xB7, 0x4D));
 
     private final Project project;
+    /** 构造时缓存会话引用；dispose 阶段项目服务容器可能已销毁，不能再做服务查找。 */
+    private final ReviewSession session;
     private final JBLabel headerLabel = new JBLabel();
     private final JBLabel statusLabel = new JBLabel();
     private final AsyncProcessIcon activityIndicator =
@@ -108,10 +110,11 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         // SimpleToolWindowPanel(boolean vertical)：true = 纵向布局（侧栏常用）
         super(true);
         this.project = project;
+        this.session = ReviewSession.getInstance(project);
         setupUi();
 
         // 订阅会话变化（回调约定在 EDT，安全更新 UI）
-        ReviewSession.getInstance(project).addListener(sessionListener);
+        session.addListener(sessionListener);
         render();
     }
 
@@ -125,7 +128,8 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         cancel(exportFuture);
         cancel(summaryFuture);
         cancel(clearHistoryFuture);
-        ReviewSession.getInstance(project).removeListener(sessionListener);
+        // 项目关闭时服务容器可能先于本面板销毁；直接用缓存引用退订，不做服务查找。
+        session.removeListener(sessionListener);
         if (!activityIndicator.isDisposed()) activityIndicator.dispose();
     }
 
@@ -952,7 +956,8 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
     }
 
     private static void cancel(CompletableFuture<?> future) {
-        if (future != null) future.cancel(true);
+        // CompletableFuture 的 mayInterruptIfRunning 参数被忽略；IO 是否继续由 disposed 标志兜底。
+        if (future != null) future.cancel(false);
     }
 
     private static boolean isRunning(CompletableFuture<?> future) {

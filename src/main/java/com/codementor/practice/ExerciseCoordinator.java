@@ -219,7 +219,8 @@ public final class ExerciseCoordinator implements Disposable {
 
     private void cancelPendingWork() {
         if (reminderFuture != null) {
-            reminderFuture.cancel(true);
+            // CompletableFuture.cancel 的 mayInterruptIfRunning 参数被忽略，只表达“放弃结果”。
+            reminderFuture.cancel(false);
             reminderFuture = null;
         }
         if (currentRequest != null) {

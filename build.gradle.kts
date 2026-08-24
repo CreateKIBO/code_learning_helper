@@ -61,12 +61,13 @@ intellijPlatform {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
         changeNotes = """
-            <h3>1.2.4 — 2026-08-24</h3>
+            <h3>1.2.5 — 2026-08-24</h3>
             <ul>
-                <li>Prevents empty final answers from official DeepSeek V4 requests by disabling thinking mode for CodeMentor calls and providing a larger structured-output budget.</li>
-                <li>Changes the second bounded attempt with a strict protocol-repair instruction instead of replaying an identical prompt.</li>
-                <li>Classifies reasoning-only, output-limit, content-filter, and blank-final responses without exposing model reasoning text.</li>
-                <li>Upgrades the Settings connection check to a synthetic mentor JSON protocol probe that sends no project source code.</li>
+                <li>Recovers the review and verification sessions when context extraction fails unexpectedly, instead of leaving the tool window idle or stuck in VERIFYING with the button disabled.</li>
+                <li>Runs model HTTP requests on a dedicated bounded thread pool so long review operations no longer occupy the shared application executor.</li>
+                <li>Reuses one HttpClient for Settings connection tests and releases the model worker pool on IDE shutdown.</li>
+                <li>Caches repeated-knowledge reminders for 45 seconds so successful reviews no longer re-read the full learning history every time.</li>
+                <li>Documents CompletableFuture cancellation semantics as "discard the result" instead of interrupting the running task.</li>
             </ul>
         """.trimIndent()
 
