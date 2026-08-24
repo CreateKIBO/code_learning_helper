@@ -1,10 +1,10 @@
-# CodeMentor 1.2.0 — Java / JavaWeb 学习教练
+# CodeMentor 1.2.1 — Java / JavaWeb 学习教练
 
 CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理解自己的代码 → 自己修改 → 验证结果 → 复习薄弱点”工作，不自动改代码、不生成完整项目，也不代写课程或毕业设计。
 
-1.2.0 发布基线日期：2026-08-22。
+当前补丁版本日期：2026-08-24；1.2.0 功能基线日期：2026-08-22。
 
-[安装与升级](docs/INSTALL.md) · [1.2.0 体验升级](docs/UX-RELEASE-1.2.md) · [隐私说明](PRIVACY.md) · [架构文档](docs/ARCHITECTURE.md) · [变更记录](CHANGELOG.md)
+[安装与升级](docs/INSTALL.md) · [1.2.1 修复说明](docs/BUGFIX-1.2.1.md) · [1.2.0 体验升级](docs/UX-RELEASE-1.2.md) · [隐私说明](PRIVACY.md) · [架构文档](docs/ARCHITECTURE.md) · [变更记录](CHANGELOG.md)
 
 ## 主要能力
 
@@ -19,6 +19,13 @@ CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理
 | 可选保存触发 | 在设置中显式开启 | 保存 Java 文件后评审最后实际编辑的方法，默认关闭 |
 
 项目根目录可放置 `.codementor/rules.md`，用于补充个人学习约定。该文件会随评审上下文发送，请勿写入密钥或无权披露的信息。
+
+## 1.2.1 设置与连接稳定性修复
+
+- API Key 后台读取完成后会在仍打开的 Settings 对话框内立即更新，不再长期停留在“正在检查”。
+- 连接测试完成、失败或无法启动时都会恢复按钮并在页内显示结果，不再长期停留在“测试中”。
+- 模型请求的 30 秒超时现在覆盖完整受限响应正文；端点只返回响应头后停止发送，也会按时失败，而不是长期占用请求。
+- 声明长度和未知长度响应继续受 2 MiB 上限约束；没有扩大代码发送、授权或本地持久化范围。
 
 ## 1.2.0 的交互与智能辅助升级
 
@@ -61,7 +68,7 @@ CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理
 .\gradlew.bat clean test verifyPluginProjectConfiguration verifyPluginStructure verifyPlugin buildPlugin
 ```
 
-已验证的 1.2.0 产物位于 `build/distributions/code-mentor-1.2.0.zip`。通过 `Settings / Preferences → Plugins → Install Plugin from Disk...` 选择该 ZIP；完整步骤、升级、回退和卸载说明见 [安装指南](docs/INSTALL.md)。2026-08-22 的发布检查通过 106 项测试（0 失败/错误/跳过）、项目配置与插件结构检查，并由 Plugin Verifier 判定兼容 IntelliJ IDEA 2024.1.1（IC-241.15989.150）。安装包为 257,669 bytes（约 251.6 KiB），SHA-256：`F0E1CD2BE49699F192E95AA0D8CE0A84D49DD4DC2AC9D0A159ABAEA7A2E06416`。
+已验证的 1.2.1 产物位于 `build/distributions/code-mentor-1.2.1.zip`。通过 `Settings / Preferences → Plugins → Install Plugin from Disk...` 选择该 ZIP；完整步骤、升级、回退和卸载说明见 [安装指南](docs/INSTALL.md)。2026-08-24 发布流水线通过 109 项测试（0 失败/错误/跳过）、项目配置与插件结构检查，Plugin Verifier 判定兼容 IntelliJ IDEA 2024.1.1（IC-241.15989.150）。安装包为 260,704 bytes（约 254.6 KiB），SHA-256：`62EB2B6A08E8659EEC3734EA8A8C644BC68DAC496D14B1F25850FA5A0C98E625`。
 
 开发时启动沙箱 IDE：
 
@@ -148,7 +155,7 @@ src/main/java/com/codementor/
 .\gradlew.bat test
 ```
 
-1.2.0 的最终结果为 106 项测试全通过、IDEA 2024.1.1 Plugin Verifier `Compatible`，ZIP 内容与 SHA-256 已核对；详细记录见 [安装指南](docs/INSTALL.md#120-发布验证状态)。
+当前 1.2.1 全量回归为 109 项、0 失败/错误/跳过；最终发布流水线与产物记录见 [安装指南](docs/INSTALL.md#121-发布验证状态)。
 
 ## 明确边界
 

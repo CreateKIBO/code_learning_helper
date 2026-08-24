@@ -61,15 +61,12 @@ intellijPlatform {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
         changeNotes = """
-            <h3>1.2.0 — 2026-08-22</h3>
+            <h3>1.2.1 — 2026-08-24</h3>
             <ul>
-                <li>Redesigned the tool window with direct empty-state actions, explicit review, follow-up, and exercise cancellation, retry and settings recovery, a compact More menu, wrapped learning content, and preserved card expansion and scroll state.</li>
-                <li>Made the learning loop more progressive: each grounded suggestion now includes a smallest next step and a self-check question, follow-ups show the learner's question, and exercise hints are revealed one at a time.</li>
-                <li>Added structured review summaries, including a useful no-suggestions state, and separate teaching guidance and labels for review versus explanation across Beginner, Intermediate, and JavaWeb levels.</li>
-                <li>Rejects results unless whitespace-equivalent evidence is present in both the masked request context and masked target source; verification evidence must also come from the current target source.</li>
-                <li>Weak-knowledge reminders count reliable distinct review IDs, merge spelling variants, and exclude resolved, verifying, false-positive, and low-confidence suggestions; legacy records without a reliable ID remain available for statistics but do not drive repeated reminders.</li>
-                <li>Manual reviews take priority over delayed save reviews, cached reviews preserve their original learning identity, and a live full-method anchor prevents modification verification from switching targets; whole-document replacement or external reload invalidates that anchor.</li>
-                <li>Follow-up question and answer text remains only in the current in-memory session and is not written to learning history.</li>
+                <li>Fixed API Key status checks and connection-test results remaining in a loading state while the modal Settings dialog is open.</li>
+                <li>Settings completion callbacks now run as guarded pure UI updates in the active modal dialog, and rejected background submissions restore the visible controls instead of leaving them busy.</li>
+                <li>Applied the 30-second model request timeout to the complete bounded response body, preventing a server that stalls after response headers from blocking connection tests or learning requests indefinitely.</li>
+                <li>Kept the 2 MiB response limit for both declared and chunked responses without materializing an unbounded body.</li>
             </ul>
         """.trimIndent()
 

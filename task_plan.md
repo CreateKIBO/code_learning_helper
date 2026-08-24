@@ -41,3 +41,28 @@
 
 ## Status
 **Complete** - 106 项测试、项目/结构检查、IDEA 2024.1.1 Plugin Verifier、ZIP 内容与 SHA-256 均已验证，1.2.0 安装包已生成。
+
+---
+
+# Follow-up Plan: 设置页 API Key / 连接测试卡死修复
+
+## Goal
+修复设置页 API Key 状态永久检查、连接测试永久测试的问题，审计同类异步状态泄漏并生成经过回归验证的补丁版本安装包。
+
+## Phases
+- [x] Phase 1: 建立复现范围并定位相关状态/任务所有者
+- [x] Phase 2: 验证根因并审计设置页及相邻异步任务的完成路径
+- [x] Phase 3: 实现最小修复与可测试的状态转换
+- [x] Phase 4: 聚焦/全量回归、Plugin Verifier 与重新打包
+
+## Key Questions
+1. PasswordSafe 读取是否实际完成，但 UI 完成回调被生命周期标志错误丢弃？
+2. 连接测试是否存在相同的 generation/disposed 守卫错误或 Future 自取消问题？
+3. 异常、取消、重复点击、Reset/Apply/Dispose 是否都能恢复按钮与状态标签？
+4. 设置页之外是否还有相同的“任务完成但 UI 永久 loading”模式？
+
+## Status
+**Complete** - 109 项回归、项目/结构检查、IDEA 2024.1.1 Plugin Verifier 与 1.2.1 ZIP 内容/哈希均已验证。
+
+## Follow-up Errors Encountered
+- 首轮正文超时测试证明 `HttpRequest.timeout` 没有终止已收到响应头但正文停滞的 `BodySubscriber`，2 秒测试保护触发；实现改为对 `sendAsync` 返回的“完整响应 Future”显式 `get(timeout)`，超时同步取消 Future 和正文订阅。

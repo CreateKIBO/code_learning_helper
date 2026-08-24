@@ -10,9 +10,11 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -62,6 +64,46 @@ class ModelHttpTransportTest {
                         .send(config(), "key", "{}"));
 
         assertTrue(error.getMessage().contains("安全大小限制"));
+    }
+
+    @Test
+    void rejectsOversizedChunkedResponseWithoutContentLength() throws Exception {
+        startServer(exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            exchange.getResponseBody().write(
+                    new byte[ModelHttpTransport.MAX_RESPONSE_BYTES + 1]);
+        });
+
+        ModelHttpTransport.ApiException error = assertThrows(
+                ModelHttpTransport.ApiException.class,
+                () -> new ModelHttpTransport(HttpClient.newHttpClient())
+                        .send(config(), "key", "{}"));
+
+        assertTrue(error.getMessage().contains("安全大小限制"));
+    }
+
+    @Test
+    void requestTimeoutCoversAResponseBodyThatStopsAfterHeaders() throws Exception {
+        startServer(exchange -> {
+            exchange.sendResponseHeaders(200, 0);
+            exchange.getResponseBody().write('{');
+            exchange.getResponseBody().flush();
+            try {
+                Thread.sleep(2_000);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+            }
+        });
+
+        ModelHttpTransport.ApiException error = assertTimeoutPreemptively(
+                Duration.ofSeconds(2),
+                () -> assertThrows(
+                        ModelHttpTransport.ApiException.class,
+                        () -> new ModelHttpTransport(
+                                HttpClient.newHttpClient(), Duration.ofMillis(150))
+                                .send(config(), "key", "{}")));
+
+        assertTrue(error.getMessage().contains("请求超时"));
     }
 
     @Test

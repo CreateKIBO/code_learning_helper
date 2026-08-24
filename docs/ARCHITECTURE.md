@@ -165,9 +165,9 @@ flowchart TD
 
 ## 7. HTTP 与响应边界
 
-`ModelHttpTransport` 负责 OpenAI 兼容的 `chat/completions` 契约：Bearer Authorization、UTF-8 JSON、30 秒单请求超时和 2xx 状态检查。边界如下：
+`ModelHttpTransport` 负责 OpenAI 兼容的 `chat/completions` 契约：Bearer Authorization、UTF-8 JSON、30 秒完整请求超时和 2xx 状态检查。响应使用有界 `BodySubscriber`，并对 `sendAsync` 的“响应头 + 完整正文”Future 显式计时；只返回响应头后停止发送正文也会取消 Future 与订阅。边界如下：
 
-- 完整 HTTP 响应体最多 2 MiB；即使服务端不提供 `Content-Length` 也只读取上限加 1 字节；
+- 完整 HTTP 响应体最多 2 MiB；声明长度超限会立即拒绝，不提供 `Content-Length` 的 chunked 响应也在订阅过程中有界取消；
 - `choices[0].message.content` 最多 64 Ki 个字符；
 - 服务端错误文本清理控制字符并限制为 300 个字符；
 - `JsonResponseParser` 另有 128,000 字符输入上限，普通字段最多 8,000 字符，短字段最多 512 字符；summary、`nextStep` 与 `selfCheckQuestion` 各有 2,000 字符上限，evidence 字段先限制为 512 字符；
@@ -184,7 +184,7 @@ flowchart TD
 | 项目规则读取 | `CompletableFuture` + IntelliJ 应用执行器 | 新评审时取消旧 Future |
 | 模型 HTTP | IntelliJ 应用执行器 | `Future` 包装为 `CancellableRequest` |
 | 保存触发防抖 | IntelliJ 应用定时执行器 | 每个 Document 替换并取消旧任务 |
-| PasswordSafe 状态/连接测试 | IntelliJ 应用执行器；保存使用平台进度任务 | UI 销毁时取消读取或测试任务 |
+| PasswordSafe 状态/连接测试 | IntelliJ 应用执行器；纯 Swing 完成回调使用 `ModalityState.any()` 回到仍打开的 Settings；保存使用平台进度任务 | disposed + generation 拒绝旧回调，UI 销毁时取消读取或测试任务 |
 | 学习历史 | IntelliJ bounded application pool，单 worker | 保持写入、导出、汇总和清理顺序 |
 | `ReviewSession` 与 Swing UI | EDT | 后台回调通过 `invokeLater` / `finishOnUiThread` 切回 |
 

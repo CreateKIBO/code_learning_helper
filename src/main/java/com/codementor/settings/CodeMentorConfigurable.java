@@ -4,6 +4,7 @@ import com.codementor.model.ModelEndpointValidator;
 import com.codementor.model.ZhiPuModelClient;
 import com.codementor.review.ReviewCoordinator;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.application.ModalityState;
 import com.intellij.openapi.options.Configurable;
 import com.intellij.openapi.options.ConfigurationException;
 import com.intellij.openapi.progress.ProgressIndicator;
@@ -303,25 +304,34 @@ public final class CodeMentorConfigurable implements Configurable {
         cancel(apiKeyStatusFuture);
         long expectedGeneration = apiKeyStatusGeneration.incrementAndGet();
         if (apiKeyStatusLabel != null) apiKeyStatusLabel.setText("正在检查已保存的 API Key…");
-        apiKeyStatusFuture = AppExecutorUtil.getAppExecutorService().submit(() -> {
-            Boolean configured;
-            try {
-                String storedKey = ApiKeyStore.getApiKey();
-                configured = storedKey != null && !storedKey.isBlank();
-            } catch (RuntimeException error) {
-                configured = null;
-            }
-            final Boolean configuredStatus = configured;
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (disposed || apiKeyStatusGeneration.get() != expectedGeneration
-                        || apiKeyStatusLabel == null) return;
-                apiKeyStatusLabel.setText(configuredStatus == null
-                        ? "无法读取 PasswordSafe 状态"
-                        : configuredStatus
-                                ? "已在 PasswordSafe 中配置（不会回填显示）"
-                                : "尚未配置");
+        try {
+            apiKeyStatusFuture = AppExecutorUtil.getAppExecutorService().submit(() -> {
+                Boolean configured;
+                try {
+                    String storedKey = ApiKeyStore.getApiKey();
+                    configured = storedKey != null && !storedKey.isBlank();
+                } catch (RuntimeException error) {
+                    configured = null;
+                }
+                final Boolean configuredStatus = configured;
+                invokeOnSettingsUi(() -> {
+                    if (disposed || apiKeyStatusGeneration.get() != expectedGeneration
+                            || apiKeyStatusLabel == null) return;
+                    apiKeyStatusFuture = null;
+                    apiKeyStatusLabel.setText(configuredStatus == null
+                            ? "无法读取 PasswordSafe 状态"
+                            : configuredStatus
+                                    ? "已在 PasswordSafe 中配置（不会回填显示）"
+                                    : "尚未配置");
+                });
             });
-        });
+        } catch (RuntimeException error) {
+            apiKeyStatusFuture = null;
+            if (!disposed && apiKeyStatusGeneration.get() == expectedGeneration
+                    && apiKeyStatusLabel != null) {
+                apiKeyStatusLabel.setText("暂时无法检查 PasswordSafe 状态");
+            }
+        }
     }
 
     private void testConnection() {
@@ -349,25 +359,33 @@ public final class CodeMentorConfigurable implements Configurable {
         testConnectionButton.setText("测试中…");
         showConnectionStatus("正在连接模型端点…", null);
         long expectedGeneration = connectionGeneration.incrementAndGet();
-        connectionTestFuture = AppExecutorUtil.getAppExecutorService().submit(() -> {
-            ZhiPuModelClient.TestResult result;
-            try {
-                String key = enteredKey.isEmpty() ? ApiKeyStore.getApiKey() : enteredKey;
-                result = ZhiPuModelClient.testConnection(
-                        endpoint.normalizedEndpoint(), key, model, allowLocalHttp);
-            } catch (RuntimeException error) {
-                result = new ZhiPuModelClient.TestResult(
-                        false, "无法读取 PasswordSafe 或启动连接测试。");
-            }
-            final ZhiPuModelClient.TestResult completedResult = result;
-            ApplicationManager.getApplication().invokeLater(() -> {
-                if (disposed || connectionGeneration.get() != expectedGeneration
-                        || testConnectionButton == null) return;
-                testConnectionButton.setEnabled(true);
-                testConnectionButton.setText("测试连接");
-                showConnectionStatus(completedResult.message, completedResult.success);
+        try {
+            connectionTestFuture = AppExecutorUtil.getAppExecutorService().submit(() -> {
+                ZhiPuModelClient.TestResult result;
+                try {
+                    String key = enteredKey.isEmpty() ? ApiKeyStore.getApiKey() : enteredKey;
+                    result = ZhiPuModelClient.testConnection(
+                            endpoint.normalizedEndpoint(), key, model, allowLocalHttp);
+                } catch (RuntimeException error) {
+                    result = new ZhiPuModelClient.TestResult(
+                            false, "无法读取 PasswordSafe 或启动连接测试。");
+                }
+                final ZhiPuModelClient.TestResult completedResult = result;
+                invokeOnSettingsUi(() -> {
+                    if (disposed || connectionGeneration.get() != expectedGeneration
+                            || testConnectionButton == null) return;
+                    connectionTestFuture = null;
+                    restoreConnectionButton();
+                    showConnectionStatus(completedResult.message, completedResult.success);
+                });
             });
-        });
+        } catch (RuntimeException error) {
+            connectionTestFuture = null;
+            if (!disposed && connectionGeneration.get() == expectedGeneration) {
+                restoreConnectionButton();
+                showConnectionStatus("暂时无法启动连接测试，请稍后重试。", false);
+            }
+        }
     }
 
     private static void revokeOpenProjectConsent() {
@@ -397,10 +415,19 @@ public final class CodeMentorConfigurable implements Configurable {
         connectionGeneration.incrementAndGet();
         cancel(connectionTestFuture);
         connectionTestFuture = null;
+        restoreConnectionButton();
+    }
+
+    private void restoreConnectionButton() {
         if (testConnectionButton != null) {
             testConnectionButton.setEnabled(true);
             testConnectionButton.setText("测试连接");
         }
+    }
+
+    /** Settings is modal; these callbacks only update guarded Swing components. */
+    static void invokeOnSettingsUi(Runnable runnable) {
+        ApplicationManager.getApplication().invokeLater(runnable, ModalityState.any());
     }
 
     private void updateDependentControls() {

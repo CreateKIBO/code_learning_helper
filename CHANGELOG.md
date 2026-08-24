@@ -2,6 +2,21 @@
 
 本项目使用语义化版本号。本文件只记录已经落到代码、测试或发布工程中的变更。
 
+## [1.2.1] - 2026-08-24
+
+### Settings and connection reliability
+
+- 修复 Settings 模态窗口打开时，后台 PasswordSafe 状态读取和连接测试完成回调被默认 non-modal 队列阻塞，导致“正在检查/测试中”直到关闭设置页的问题。
+- 两个完成回调统一为带 disposed/generation 守卫的纯 UI `ModalityState.any()` 更新；后台任务无法提交时也会恢复状态文本和测试按钮。
+- 模型 HTTP 改为有界完整正文订阅，并对 `sendAsync` 的完整响应 Future 显式执行 30 秒超时；端点返回响应头后停止发送正文时会取消 Future 与订阅。
+- 2 MiB 响应上限同时覆盖有 `Content-Length` 和未知长度/chunked 响应；新增真实模态队列、正文停滞和未知长度超限回归测试。
+- 发送授权、API Key 存储位置、学习历史和 AI 教学协议均未改变。
+
+### Release engineering
+
+- 版本更新为 `1.2.1`，发布流水线通过 109 项测试、项目配置与插件结构检查；Plugin Verifier 1.409 判定 IDEA 2024.1.1（IC-241.15989.150）`Compatible`。
+- ZIP 内嵌版本/兼容范围及 LICENSE、NOTICE、PRIVACY、图标均已核对；产物为 260,704 bytes，SHA-256 `62EB2B6A08E8659EEC3734EA8A8C644BC68DAC496D14B1F25850FA5A0C98E625`。本地产物未执行 Marketplace 签名或发布。
+
 ## [1.2.0] - 2026-08-22
 
 ### Interaction and recovery

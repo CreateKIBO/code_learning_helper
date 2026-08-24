@@ -1,6 +1,6 @@
-# CodeMentor 1.2.0 安装与生命周期指南
+# CodeMentor 1.2.1 安装与生命周期指南
 
-发布基线日期：2026-08-22。
+补丁版本日期：2026-08-24。
 
 ## 兼容范围
 
@@ -24,7 +24,7 @@ chmod +x ./gradlew
 ./gradlew clean test verifyPluginProjectConfiguration verifyPluginStructure verifyPlugin buildPlugin
 ```
 
-成功后目标安装包位于 `build/distributions/code-mentor-1.2.0.zip`。Gradle Wrapper 从官方地址下载 9.0.0，并使用仓库中固定的 SHA-256 校验发行包；CI 还会在执行 Wrapper 前校验仓库内 launcher JAR。首次运行会下载目标 IDE 和 Plugin Verifier，因此耗时和磁盘占用会较大。本仓库当前 1.2.0 产物的实测结果见文末“发布验证状态”。
+成功后目标安装包位于 `build/distributions/code-mentor-1.2.1.zip`。Gradle Wrapper 从官方地址下载 9.0.0，并使用仓库中固定的 SHA-256 校验发行包；CI 还会在执行 Wrapper 前校验仓库内 launcher JAR。首次运行会下载目标 IDE 和 Plugin Verifier，因此耗时和磁盘占用会较大。本仓库当前 1.2.1 产物的实测结果见文末“发布验证状态”。
 
 开发时可运行：
 
@@ -38,7 +38,7 @@ chmod +x ./gradlew
 
 1. 打开 `Settings / Preferences → Plugins`。
 2. 点击齿轮菜单，选择 `Install Plugin from Disk...`。
-3. 选择 `code-mentor-1.2.0.zip`，不要提前解压；正式交付前请确认它已完成最终验证并核对发布方提供的 SHA-256。
+3. 选择 `code-mentor-1.2.1.zip`，不要提前解压；正式交付前请确认它已完成最终验证并核对发布方提供的 SHA-256。
 4. 按提示重启 IDE。
 5. 进入 `Settings / Preferences → Tools → CodeMentor` 完成下一节配置。
 
@@ -59,7 +59,7 @@ chmod +x ./gradlew
 
 升级时直接通过 `Install Plugin from Disk...` 选择同一插件 ID 的新 ZIP 并重启。非敏感设置、PasswordSafe 凭据、项目 workspace 数据和学习历史通常会保留。
 
-升级到 1.2.0 不扩大已有发送范围，也不迁移或上传本地学习历史。发送仍按项目和端点检查；如果当前组合尚未获得授权，下一次需要发送的手动评审/解释会重新显示预览。自 1.1.0 起，插件不再把完整代码或模型证据写入学习历史；1.2.0 也不会写入追问问题或回答，但不会擅自删除旧开发版本已经写入的 JSONL。如需消除旧记录，请升级后使用侧栏“更多… → 隐私与数据 → 清除全部本地学习记录”。
+升级到 1.2.1 不扩大已有发送范围，也不迁移或上传本地学习历史。发送仍按项目和端点检查；如果当前组合尚未获得授权，下一次需要发送的手动评审/解释会重新显示预览。自 1.1.0 起，插件不再把完整代码或模型证据写入学习历史；1.2.0 起也不会写入追问问题或回答，但不会擅自删除旧开发版本已经写入的 JSONL。如需消除旧记录，请升级后使用侧栏“更多… → 隐私与数据 → 清除全部本地学习记录”。
 
 1.2.0 更新侧栏交互但保留原有快捷键：空状态可直接评审、解释或打开设置；评审、追问等待和练习生成均可取消；失败后可重试或打开设置；次要操作移到“更多…”菜单。同一次评审内的讲解/示例展开状态与滚动位置会在反馈、验证和追问刷新时保持。追问区只显示当前会话中每条建议最近一次问题与回答，新评审、会话重置或项目关闭后消失。修改验证只对完整方法开放；选中片段仍可评审/解释，但需把光标放在完整方法内重新评审后才能验证修改。
 
@@ -106,15 +106,15 @@ chmod +x ./gradlew
 
 这些值只能通过本地安全环境变量或 CI Secret 注入，不得提交到仓库、构建日志或发布产物。启用自动签名/发布前还要在 `build.gradle.kts` 显式配置任务并人工确认目标 channel；项目默认不执行发布操作。
 
-## 1.2.0 发布验证状态
+## 1.2.1 发布验证状态
 
-- 验证日期：2026-08-22。
-- 完整测试套件：106 项，0 失败、0 错误、0 跳过。
+- 验证日期：2026-08-24。
+- 完整测试套件：109 项，0 失败、0 错误、0 跳过。
 - `verifyPluginProjectConfiguration` 与 `verifyPluginStructure`：通过。
-- Plugin Verifier 1.409：`com.codementor:1.2.0` 对 IntelliJ IDEA 2024.1.1（IC-241.15989.150）为 `Compatible`。
-- ZIP 内容：`code-mentor/lib/code-mentor-1.2.0.jar`；JAR 内已核对 `META-INF/plugin.xml`、`LICENSE`、`NOTICE`、`PRIVACY.md` 和 `pluginIcon.svg`。
-- 插件元数据：ID `com.codementor`，版本 `1.2.0`，兼容范围 `241` 至 `241.*`。
-- 安装包大小：257,669 bytes（约 251.6 KiB）。
-- SHA-256：`F0E1CD2BE49699F192E95AA0D8CE0A84D49DD4DC2AC9D0A159ABAEA7A2E06416`。
+- Plugin Verifier 1.409：`com.codementor:1.2.1` 对 IntelliJ IDEA 2024.1.1（IC-241.15989.150）为 `Compatible`。
+- ZIP 内容：`code-mentor/lib/code-mentor-1.2.1.jar`；JAR 内已核对 `META-INF/plugin.xml`、`LICENSE`、`NOTICE`、`PRIVACY.md` 和 `pluginIcon.svg`。
+- 插件元数据：ID `com.codementor`，版本 `1.2.1`，兼容范围 `241` 至 `241.*`。
+- 安装包大小：260,704 bytes（约 254.6 KiB）。
+- SHA-256：`62EB2B6A08E8659EEC3734EA8A8C644BC68DAC496D14B1F25850FA5A0C98E625`。
 
-本次 Verifier 在读取 JetBrains 在线“已记录 API 变更”页面时遇到本机 JBR 的 PKIX 证书链告警，因此没有应用在线的已记录问题忽略表；实际插件二进制检查继续完成，结论为 `Compatible`，Gradle 任务成功。该 ZIP 是本地构建产物，未执行 Marketplace 签名或发布。
+该 ZIP 是本地构建产物，未执行 Marketplace 签名或发布。

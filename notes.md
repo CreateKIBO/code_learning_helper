@@ -55,3 +55,27 @@
 - 干净 Gradle 发布流水线、项目配置与结构检查通过。
 - Plugin Verifier：IDEA 2024.1.1（IC-241.15989.150）`Compatible`；在线 documented-problems 页面有本机 JBR PKIX 告警，但二进制检查与任务完成。
 - 最终 ZIP：257,669 bytes；SHA-256 `F0E1CD2BE49699F192E95AA0D8CE0A84D49DD4DC2AC9D0A159ABAEA7A2E06416`。
+
+## 2026-08-24 设置页异步卡死报告
+
+### 用户可见症状
+- 打开设置页后 API Key 状态一直停留在“正在检查”。
+- 配置模型与 Key 后点击“测试连接”，按钮一直停留在“测试中”。
+
+### Investigation pending
+- 根因已确认：`CodeMentorConfigurable` 从应用后台执行器调用无 modality 参数的 `Application.invokeLater`。后台线程的默认 modality 等价于 non-modal，Settings 对话框打开时回调会排队到窗口关闭后；API Key 标签和连接按钮因此一直 loading。
+- JetBrains 官方线程模型说明 `ModalityState.any()` 只适合纯 UI 更新；本场景回调只更新当前 Configurable 的 JLabel/JButton，并有 disposed + generation 守卫，适合统一使用该状态。
+- 同类风险：`ModelHttpTransport` 使用 `BodyHandlers.ofInputStream()`，其 completion stage 在正文读取前完成；请求 30 秒 timeout 未必覆盖之后的 `readNBytes`，恶意/异常端点在返回响应头后停住可让连接测试和模型请求长期阻塞。
+- 实验进一步确认：只把 InputStream 换成完整正文 `BodySubscriber` 仍不足以让 `HttpRequest.timeout` 在测试服务器“发头后停住”时生效；必须对 `sendAsync` 的完整响应 Future 显式计时并取消订阅。
+- 其余默认 `invokeLater` 调用会触及 session/PSI/项目状态，等待模态窗口关闭是安全语义，不应机械替换为 `any()`；Tool Window 的 Swing 回调不属于 Settings 永久 loading 根因。
+
+### Implemented and focused verification
+- Settings 的两个纯 UI 完成回调统一经过 `invokeOnSettingsUi(..., ModalityState.any())`，保留 disposed/generation 守卫；executor 拒绝任务时立即恢复标签/按钮。
+- HTTP 改为有界 `BodySubscriber` + 完整 `sendAsync` Future 显式超时，超时取消 Future 与订阅；声明长度和未知长度响应都限制为 2 MiB。
+- 6 项聚焦测试全部通过，包括真实 modal queue 对照和“响应头后正文停住”的本机 HTTP 测试。
+
+### Final 1.2.1 verification
+- 完整测试：109 项，0 failures / errors / skipped。
+- `verifyPluginProjectConfiguration`、`verifyPluginStructure`：通过。
+- Plugin Verifier 1.409：IDEA 2024.1.1（IC-241.15989.150）`Compatible`，本次无在线证书链告警。
+- ZIP：260,704 bytes；SHA-256 `62EB2B6A08E8659EEC3734EA8A8C644BC68DAC496D14B1F25850FA5A0C98E625`。
