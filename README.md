@@ -1,10 +1,10 @@
-# CodeMentor 1.2.1 — Java / JavaWeb 学习教练
+# CodeMentor 1.2.4 — Java / JavaWeb 学习教练
 
 CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理解自己的代码 → 自己修改 → 验证结果 → 复习薄弱点”工作，不自动改代码、不生成完整项目，也不代写课程或毕业设计。
 
 当前补丁版本日期：2026-08-24；1.2.0 功能基线日期：2026-08-22。
 
-[安装与升级](docs/INSTALL.md) · [1.2.1 修复说明](docs/BUGFIX-1.2.1.md) · [1.2.0 体验升级](docs/UX-RELEASE-1.2.md) · [隐私说明](PRIVACY.md) · [架构文档](docs/ARCHITECTURE.md) · [变更记录](CHANGELOG.md)
+[安装与升级](docs/INSTALL.md) · [1.2.4 修复说明](docs/BUGFIX-1.2.4.md) · [1.2.3 修复说明](docs/BUGFIX-1.2.3.md) · [1.2.2 修复说明](docs/BUGFIX-1.2.2.md) · [1.2.1 修复说明](docs/BUGFIX-1.2.1.md) · [1.2.0 体验升级](docs/UX-RELEASE-1.2.md) · [隐私说明](PRIVACY.md) · [架构文档](docs/ARCHITECTURE.md) · [变更记录](CHANGELOG.md)
 
 ## 主要能力
 
@@ -19,6 +19,30 @@ CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理
 | 可选保存触发 | 在设置中显式开启 | 保存 Java 文件后评审最后实际编辑的方法，默认关闭 |
 
 项目根目录可放置 `.codementor/rules.md`，用于补充个人学习约定。该文件会随评审上下文发送，请勿写入密钥或无权披露的信息。
+
+## 1.2.4 模型空内容与导师协议修复
+
+- DeepSeek V4 默认思考模式可能先生成 `reasoning_content`，而 JSON Output 官方也记录了偶发空 `content`。插件现在仅对 `api.deepseek.com` 显式关闭思考模式，不会把服务商私有字段发给其他 OpenAI 兼容端点。
+- DeepSeek 官方结构化操作使用 8,192 tokens 输出预算；其他端点继续使用 2,400，HTTP 正文、最终 content 和字段容量上限均未放宽。
+- 第一次收到空最终答案或不合格协议后，第二次有限尝试会追加明确的 JSON/文本修复指令并降低温度，不再原样重复一个已失败的请求。
+- 传输层会区分“只返回推理”“达到输出上限”“内容过滤”和普通空答案，但不会记录或展示模型的思考文本。
+- 设置页“测试连接”升级为不含项目源码的合成导师 JSON 协议测试；测试成功现在同时证明网络、鉴权、模型、`response_format`、最终 `content` 和基础解析契约可用。
+- 本机端到端回归模拟第一次空 content、第二次合法导师 JSON，并通过真实 worker、HTTP transport、解析器和 callback 得到成功评审。
+
+## 1.2.3 导师请求超时与加载反馈修复
+
+- 最小连接测试继续使用 30 秒上限；真实评审、解释、修改验证、追问和练习改用 120 秒完整响应上限，避免配置测试成功后，较大的结构化学习请求固定在 30 秒失败。
+- 超时仍覆盖响应头和完整受限正文，用户取消会继续中断本地 Future 与正文订阅；2 MiB 响应上限和 64 Ki 字符内容上限不变。
+- 导师侧栏状态行新增 IntelliJ 原生小型加载动效，覆盖模型请求以及学习统计、复习导出和本地记录清理；不使用大遮罩，也不会引起状态行布局跳动。
+- 动效在成功、失败、取消、窗口隐藏期间任务结束或面板销毁后都会恢复空闲，并提供工具提示和可用时的辅助功能描述。
+
+## 1.2.2 DeepSeek / OpenAI 兼容地址修复
+
+- 设置页现在明确接受服务根地址、以 `/v1` 结尾的 Base URL 或完整 Chat Completions 地址。`https://api.deepseek.com` 会规范化为 `https://api.deepseek.com/chat/completions`，`https://api.deepseek.com/v1` 会规范化为 `https://api.deepseek.com/v1/chat/completions`。
+- 已经是 `/chat/completions` 的地址不会重复追加；其他带自定义路径的完整端点保持原样。
+- 新增不包含 API Key 的常用预设：智谱 GLM-5.2、DeepSeek V4 Flash/Pro、通义千问 Qwen Plus、OpenAI GPT-4.1 mini、Gemini 3.7 Flash。选择预设只填地址和模型，并清空尚未保存的 Key 输入框，不会删除 PasswordSafe 中已有的 Key。
+- 连接测试显示实际请求地址；HTTP 404 会同时提示检查端点路径与模型名。
+- DeepSeek 官方端点会在联网前拒绝已经停用的 `deepseek-chat` / `deepseek-reasoner`，并提示改用 `deepseek-v4-flash` 或 `deepseek-v4-pro`。第三方兼容端点不受这一服务商专属校验限制。
 
 ## 1.2.1 设置与连接稳定性修复
 
@@ -45,10 +69,10 @@ CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理
 ## 延续自 1.1.0 的安全与隐私基线
 
 - 模型配置在每次操作开始时捕获为不可变快照，包含规范化端点、模型、教学级别和提示协议版本；请求进行中修改设置不会让同一请求前后漂移。
-- 默认只接受带请求路径的 HTTPS 端点，并拒绝 URL 用户信息、查询参数和片段。HTTP 只在用户显式开启后允许 `localhost`、`127.0.0.0/8` 或 `::1` 回环地址。
+- 默认只接受 HTTPS 地址，并拒绝 URL 用户信息、查询参数和片段。无路径根地址和标准 `/v1` Base URL 会补全 `/chat/completions`；HTTP 只在用户显式开启后允许 `localhost`、`127.0.0.0/8` 或 `::1` 回环地址。
 - 发送授权按“项目 × 规范化端点”保存。某个项目对端点 A 的授权不会用于端点 B；模型名称变化不会单独改变授权。
 - 首次需要发送缓存未命中的手动评审或解释时，显示可滚动的完整脱敏上下文预览，最多展示 32,000 个字符；超出时会明确标记截断。可选设置让每次需要发送的手动评审/解释都再次确认。
-- 评审、修改验证、追问和练习在操作边界统一经过 `OutboundRequestGuard`，检查功能开关和项目端点授权；有代码上下文时还检查项目边界和适用的文件排除规则。连接测试只发送最小测试提示，不携带项目学习上下文。
+- 评审、修改验证、追问和练习在操作边界统一经过 `OutboundRequestGuard`，检查功能开关和项目端点授权；有代码上下文时还检查项目边界和适用的文件排除规则。连接测试只发送固定的合成 JSON 提示，不携带项目学习上下文。
 - 预览和真实评审请求复用同一个脱敏载荷；秘密遮盖覆盖常见赋值、认证头、JWT、令牌前缀、URI 凭据、查询参数和私钥块。遮盖是尽力保护，不能代替人工确认。
 - API Key 只保存到 IntelliJ PasswordSafe。设置页不会把已保存密钥回填到输入框，新增、替换和删除都需要用户显式操作。
 - 撤销授权、更换端点、关闭总功能开关或更改/清除 API Key 时，会重置相关已打开项目会话，并尽力取消其评审、验证、追问和练习；远程服务已经收到的数据无法召回。
@@ -68,7 +92,7 @@ CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理
 .\gradlew.bat clean test verifyPluginProjectConfiguration verifyPluginStructure verifyPlugin buildPlugin
 ```
 
-已验证的 1.2.1 产物位于 `build/distributions/code-mentor-1.2.1.zip`。通过 `Settings / Preferences → Plugins → Install Plugin from Disk...` 选择该 ZIP；完整步骤、升级、回退和卸载说明见 [安装指南](docs/INSTALL.md)。2026-08-24 发布流水线通过 109 项测试（0 失败/错误/跳过）、项目配置与插件结构检查，Plugin Verifier 判定兼容 IntelliJ IDEA 2024.1.1（IC-241.15989.150）。安装包为 260,704 bytes（约 254.6 KiB），SHA-256：`62EB2B6A08E8659EEC3734EA8A8C644BC68DAC496D14B1F25850FA5A0C98E625`。
+已验证的 1.2.4 产物位于 `build/distributions/code-mentor-1.2.4.zip`。通过 `Settings / Preferences → Plugins → Install Plugin from Disk...` 选择该 ZIP；完整步骤、升级、回退和卸载说明见 [安装指南](docs/INSTALL.md)。2026-08-24 发布流水线通过 124 项测试（0 失败/错误/跳过）、项目配置与插件结构检查，Plugin Verifier 判定兼容 IntelliJ IDEA 2024.1.1（IC-241.15989.150）。安装包为 269,733 bytes（约 263.4 KiB），SHA-256：`F2DC02FA35DDABD6A52221E7B882018C29E31BCC112FD55343AADB05CF89BF02`。
 
 开发时启动沙箱 IDE：
 
@@ -80,12 +104,12 @@ CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理
 
 进入 `Settings / Preferences → Tools → CodeMentor`：
 
-1. 保留默认 HTTPS 端点或填写自己的 OpenAI 兼容端点。
-2. 保留默认 `glm-5.2` 或填写端点支持的模型名。
+1. 从“常用模型预设”选择一个服务，或手动填写 OpenAI 兼容服务根地址、`/v1` Base URL 或完整 `/chat/completions` 地址。
+2. 预设会自动填写模型名；自定义地址则填写端点支持的模型名。DeepSeek 官方当前使用 `deepseek-v4-flash` 或 `deepseek-v4-pro`。
 3. 输入 API Key。留空不会覆盖 PasswordSafe 中已有的 Key；如需删除，勾选“删除 PasswordSafe 中已保存的 API Key”。
 4. 按需选择中文显示的“初学、进阶、JavaWeb”教学级别，并设置保存触发、每次手动预览和文件排除规则。
 5. 只有本机模型或调试代理确实需要时，才开启“允许 HTTP 本机回环端点”。
-6. 点击“测试连接”。结果会显示在设置页内；测试只发送“只回复 OK”的最小提示，不发送项目源码。
+6. 点击“测试连接”。结果会显示在设置页内；测试发送固定的合成导师 JSON 协议提示，不读取或发送项目源码。
 
 第一次需要把某项目的未缓存评审/解释上下文发送到当前端点时，预览确认框会显示目标端点和脱敏内容。选择“发送并记住此地址”后，该项目才能继续向同一端点执行评审、验证、追问和练习。切换到未授权端点时，需要先发起新的手动评审/解释并完成确认；纯本地缓存命中不会发送网络请求，也不需要为了显示缓存结果建立授权。
 
@@ -155,7 +179,7 @@ src/main/java/com/codementor/
 .\gradlew.bat test
 ```
 
-当前 1.2.1 全量回归为 109 项、0 失败/错误/跳过；最终发布流水线与产物记录见 [安装指南](docs/INSTALL.md#121-发布验证状态)。
+当前 1.2.4 全量回归为 124 项、0 失败/错误/跳过；最终发布流水线与产物记录见 [安装指南](docs/INSTALL.md#124-发布验证状态)。
 
 ## 明确边界
 

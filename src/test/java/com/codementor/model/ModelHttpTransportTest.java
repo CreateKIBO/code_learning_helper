@@ -14,6 +14,7 @@ import java.time.Duration;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -39,7 +40,7 @@ class ModelHttpTransportTest {
         });
 
         String body = ZhiPuModelClient.buildRequestBody(
-                "glm-5.2", "system", "你好，Java", true);
+                config(), "system", "你好，Java", true);
         String content = new ModelHttpTransport(HttpClient.newHttpClient())
                 .send(config(), "secret-key", body);
 
@@ -48,6 +49,8 @@ class ModelHttpTransportTest {
         assertEquals("{\"suggestions\":[]}", content);
         assertTrue(body.contains("\"response_format\""));
         assertTrue(body.contains("\"json_object\""));
+        assertTrue(body.contains("\"max_tokens\":2400"));
+        assertFalse(body.contains("\"thinking\""));
     }
 
     @Test
@@ -120,6 +123,40 @@ class ModelHttpTransportTest {
 
         assertTrue(error.getMessage().startsWith("服务端返回 429"));
         assertTrue(error.getMessage().length() < 340);
+    }
+
+    @Test
+    void explainsBothEndpointAndModelCausesForNotFoundResponses() throws Exception {
+        startServer(exchange -> respond(
+                exchange,
+                404,
+                "{\"error\":{\"message\":\"Not Found\"}}"));
+
+        ModelHttpTransport.ApiException error = assertThrows(
+                ModelHttpTransport.ApiException.class,
+                () -> new ModelHttpTransport(HttpClient.newHttpClient())
+                        .send(config(), "key", "{}"));
+
+        assertTrue(error.getMessage().contains("/chat/completions"));
+        assertTrue(error.getMessage().contains("模型名称"));
+    }
+
+    @Test
+    void classifiesReasoningOnlyResponseWithoutExposingReasoningText() throws Exception {
+        startServer(exchange -> respond(
+                exchange,
+                200,
+                "{\"choices\":[{\"finish_reason\":\"stop\",\"message\":{"
+                        + "\"reasoning_content\":\"private chain of thought\","
+                        + "\"content\":\"\"}}]}"));
+
+        ModelHttpTransport.EmptyContentException error = assertThrows(
+                ModelHttpTransport.EmptyContentException.class,
+                () -> new ModelHttpTransport(HttpClient.newHttpClient())
+                        .send(config(), "key", "{}"));
+
+        assertTrue(error.getMessage().contains("只返回了推理过程"));
+        assertFalse(error.getMessage().contains("private chain of thought"));
     }
 
     private void startServer(ExchangeHandler handler) throws IOException {

@@ -367,6 +367,15 @@ public final class ReviewSession {
     public List<KnowledgeReminder> getKnowledgeReminders() { return knowledgeReminders; }
     public ExerciseResult getExerciseResult() { return exerciseResult; }
     public int getRevealedExerciseHints() { return revealedExerciseHints; }
+    /** Single derived busy signal for every model-backed operation in this session. */
+    public boolean hasPendingOperation() {
+        return status == ReviewStatus.REQUESTING
+                || verificationResults.values().stream().anyMatch(result ->
+                        result.getStatus() == VerificationStatus.VERIFYING)
+                || followUpResults.values().stream().anyMatch(result ->
+                        result.getStatus() == FollowUpResult.Status.REQUESTING)
+                || exerciseResult.getStatus() == ExerciseResult.Status.GENERATING;
+    }
     public String getLearningReviewId() {
         return learningReviewId == null ? "" : learningReviewId;
     }

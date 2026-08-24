@@ -29,6 +29,8 @@ import javax.swing.JComponent;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JScrollPane;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
@@ -43,6 +45,7 @@ public final class CodeMentorConfigurable implements Configurable {
     private JPasswordField apiKeyField;
     private JBLabel apiKeyStatusLabel;
     private JBCheckBox clearApiKeyCheckBox;
+    private JComboBox<ModelProviderPreset> presetCombo;
     private JBTextField apiUrlField;
     private JBTextField modelField;
     private JComboBox<CodeMentorSettings.TeachingLevel> levelCombo;
@@ -59,6 +62,7 @@ public final class CodeMentorConfigurable implements Configurable {
     private Future<?> apiKeyStatusFuture;
     private Future<?> connectionTestFuture;
     private volatile boolean disposed;
+    private boolean syncingPreset;
 
     @Override
     public @Nls(capitalization = Nls.Capitalization.Title) String getDisplayName() {
@@ -91,41 +95,53 @@ public final class CodeMentorConfigurable implements Configurable {
         });
         addWide(panel, gbc, 2, clearApiKeyCheckBox);
 
-        addLabel(panel, gbc, 3, "API 地址：");
+        addLabel(panel, gbc, 3, "常用模型预设：");
+        presetCombo = new JComboBox<>(ModelProviderPreset.values());
+        presetCombo.setToolTipText("只填充 API 地址和模型名；API Key 保持空白。");
+        presetCombo.addActionListener(event -> applySelectedPreset());
+        addWide(panel, gbc, 3, presetCombo);
+
+        addLabel(panel, gbc, 4, "API 根地址或完整地址：");
         apiUrlField = new JBTextField();
-        apiUrlField.setToolTipText("默认使用智谱官方 HTTPS 端点；更换地址后需重新授权当前项目。");
-        addWide(panel, gbc, 3, apiUrlField);
+        apiUrlField.setToolTipText(
+                "可填写 https://api.deepseek.com、以 /v1 结尾的 Base URL，"
+                        + "或完整 /chat/completions 地址；更换地址后需重新授权当前项目。");
+        addWide(panel, gbc, 4, apiUrlField);
 
-        addLabel(panel, gbc, 4, "模型：");
+        addLabel(panel, gbc, 5, "模型：");
         modelField = new JBTextField();
-        modelField.setToolTipText("默认 glm-5.2，也可填写端点支持的兼容模型名。");
-        addWide(panel, gbc, 4, modelField);
+        modelField.setToolTipText(
+                "默认 glm-5.2；DeepSeek 官方当前可使用 deepseek-v4-flash"
+                        + " 或 deepseek-v4-pro。");
+        addWide(panel, gbc, 5, modelField);
+        attachPresetSync(apiUrlField);
+        attachPresetSync(modelField);
 
-        addLabel(panel, gbc, 5, "教学级别：");
+        addLabel(panel, gbc, 6, "教学级别：");
         levelCombo = new JComboBox<>(CodeMentorSettings.TeachingLevel.values());
-        addWide(panel, gbc, 5, levelCombo);
+        addWide(panel, gbc, 6, levelCombo);
 
         enableReviewCheckBox = new JBCheckBox("启用 CodeMentor 评审与学习功能");
         enableReviewCheckBox.addActionListener(event -> updateDependentControls());
-        addWide(panel, gbc, 6, enableReviewCheckBox);
+        addWide(panel, gbc, 7, enableReviewCheckBox);
         enableSaveReviewCheckBox = new JBCheckBox(
                 "保存 Java 文件时评审最后编辑的方法（默认关闭）");
-        addWide(panel, gbc, 7, enableSaveReviewCheckBox);
+        addWide(panel, gbc, 8, enableSaveReviewCheckBox);
         previewEveryRequestCheckBox = new JBCheckBox("每次手动评审或解释前显示完整脱敏预览");
-        addWide(panel, gbc, 8, previewEveryRequestCheckBox);
+        addWide(panel, gbc, 9, previewEveryRequestCheckBox);
         allowInsecureLocalEndpointCheckBox = new JBCheckBox(
                 "允许 HTTP 本机回环端点（仅 localhost / 127.0.0.0/8 / ::1）");
         allowInsecureLocalEndpointCheckBox.setToolTipText(
                 "仅用于本机模型或调试代理；非本机地址仍必须使用 HTTPS。");
-        addWide(panel, gbc, 9, allowInsecureLocalEndpointCheckBox);
+        addWide(panel, gbc, 10, allowInsecureLocalEndpointCheckBox);
 
-        addWide(panel, gbc, 10, new JBLabel("自定义排除模式（每行或分号分隔）："));
+        addWide(panel, gbc, 11, new JBLabel("自定义排除模式（每行或分号分隔）："));
         excludedPatternsArea = new JBTextArea(5, 44);
         excludedPatternsArea.setLineWrap(false);
         excludedPatternsArea.setToolTipText(
                 "示例：**/generated/**；**/secret/**；*Credential.java");
         gbc.gridx = 0;
-        gbc.gridy = 11;
+        gbc.gridy = 12;
         gbc.gridwidth = 2;
         gbc.weightx = 1;
         gbc.weighty = 1;
@@ -134,20 +150,23 @@ public final class CodeMentorConfigurable implements Configurable {
 
         JPanel actions = new JPanel();
         testConnectionButton = new JButton("测试连接");
+        testConnectionButton.setToolTipText(
+                "发送固定的合成导师 JSON 提示，不读取或发送项目代码");
         testConnectionButton.addActionListener(event -> testConnection());
         JButton revokeConsentButton = new JButton("撤销已打开项目的发送授权");
         revokeConsentButton.addActionListener(event -> revokeOpenProjectConsent());
         actions.add(testConnectionButton);
         actions.add(revokeConsentButton);
-        gbc.gridy = 12;
+        gbc.gridy = 13;
         gbc.weighty = 0;
         gbc.fill = GridBagConstraints.HORIZONTAL;
         panel.add(actions, gbc);
 
-        connectionStatusLabel = new JBLabel("测试结果会显示在这里，不会打断当前设置流程。");
+        connectionStatusLabel = new JBLabel(
+                "测试结果会显示在这里；测试不读取或发送项目代码。");
         connectionStatusLabel.setForeground(JBColor.GRAY);
         connectionStatusLabel.getAccessibleContext().setAccessibleName("模型连接测试状态");
-        gbc.gridy = 13;
+        gbc.gridy = 14;
         panel.add(connectionStatusLabel, gbc);
 
         JBLabel hint = new JBLabel(
@@ -155,7 +174,7 @@ public final class CodeMentorConfigurable implements Configurable {
                         + "API Key 不会写入项目或普通设置文件。代码只会在项目授权后发送；"
                         + "更换端点会自动使旧授权失效。项目外文件和排除文件不会采集。"
                         + "</body></html>");
-        gbc.gridy = 14;
+        gbc.gridy = 15;
         panel.add(hint, gbc);
 
         reset();
@@ -190,7 +209,8 @@ public final class CodeMentorConfigurable implements Configurable {
         if (!endpoint.valid()) throw new ConfigurationException(endpoint.errorMessage());
 
         String model = modelField.getText().trim();
-        String modelError = ModelEndpointValidator.validateModel(model);
+        String modelError = ModelEndpointValidator.validateModelForEndpoint(
+                model, endpoint.normalizedEndpoint());
         if (!modelError.isEmpty()) throw new ConfigurationException(modelError);
 
         CodeMentorSettings settings = CodeMentorSettings.getInstance();
@@ -207,6 +227,7 @@ public final class CodeMentorConfigurable implements Configurable {
         settings.setExcludedFilePatterns(excludedPatternsArea.getText());
         apiUrlField.setText(settings.getApiBaseUrl());
         modelField.setText(settings.getModel());
+        syncPresetSelection();
         excludedPatternsArea.setText(settings.getExcludedFilePatterns());
         if (!previousEndpoint.equals(settings.getApiBaseUrl())
                 || (reviewWasEnabled && !settings.isReviewEnabled())) {
@@ -290,6 +311,7 @@ public final class CodeMentorConfigurable implements Configurable {
         clearApiKeyCheckBox = null;
         apiUrlField = null;
         modelField = null;
+        presetCombo = null;
         levelCombo = null;
         enableReviewCheckBox = null;
         enableSaveReviewCheckBox = null;
@@ -348,7 +370,8 @@ public final class CodeMentorConfigurable implements Configurable {
             showConnectionStatus(endpoint.errorMessage(), false);
             return;
         }
-        String modelError = ModelEndpointValidator.validateModel(model);
+        String modelError = ModelEndpointValidator.validateModelForEndpoint(
+                model, endpoint.normalizedEndpoint());
         if (!modelError.isEmpty()) {
             showConnectionStatus(modelError, false);
             return;
@@ -357,7 +380,8 @@ public final class CodeMentorConfigurable implements Configurable {
         cancelConnectionTest();
         testConnectionButton.setEnabled(false);
         testConnectionButton.setText("测试中…");
-        showConnectionStatus("正在连接模型端点…", null);
+        showConnectionStatus(
+                "正在连接：" + endpoint.normalizedEndpoint(), null);
         long expectedGeneration = connectionGeneration.incrementAndGet();
         try {
             connectionTestFuture = AppExecutorUtil.getAppExecutorService().submit(() -> {
@@ -422,6 +446,57 @@ public final class CodeMentorConfigurable implements Configurable {
         if (testConnectionButton != null) {
             testConnectionButton.setEnabled(true);
             testConnectionButton.setText("测试连接");
+        }
+    }
+
+    private void applySelectedPreset() {
+        if (syncingPreset || presetCombo == null) return;
+        ModelProviderPreset preset = (ModelProviderPreset) presetCombo.getSelectedItem();
+        if (preset == null || preset.isCustom()) return;
+        syncingPreset = true;
+        try {
+            apiUrlField.setText(preset.endpoint());
+            modelField.setText(preset.model());
+            apiKeyField.setText("");
+            clearApiKeyCheckBox.setSelected(false);
+            apiKeyField.setEnabled(true);
+            testConnectionButton.setEnabled(true);
+        } finally {
+            syncingPreset = false;
+        }
+        cancelConnectionTest();
+        showConnectionStatus(
+                "已载入 " + preset + "；请填写 API Key 后测试连接。", null);
+    }
+
+    private void attachPresetSync(JBTextField field) {
+        field.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent event) {
+                syncPresetSelection();
+            }
+
+            @Override
+            public void removeUpdate(DocumentEvent event) {
+                syncPresetSelection();
+            }
+
+            @Override
+            public void changedUpdate(DocumentEvent event) {
+                syncPresetSelection();
+            }
+        });
+    }
+
+    private void syncPresetSelection() {
+        if (syncingPreset || presetCombo == null
+                || apiUrlField == null || modelField == null) return;
+        syncingPreset = true;
+        try {
+            presetCombo.setSelectedItem(ModelProviderPreset.matching(
+                    apiUrlField.getText(), modelField.getText()));
+        } finally {
+            syncingPreset = false;
         }
     }
 

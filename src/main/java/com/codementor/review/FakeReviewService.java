@@ -137,7 +137,7 @@ public class FakeReviewService implements ReviewService {
     /** 模拟真实模型常见的失败原因，让 FAILED 状态有真实感。 */
     private String simulatedFailure() {
         String[] reasons = {
-            "请求超时（模型响应超过 30 秒）",
+            "请求超时（模型响应超过 120 秒）",
             "响应 JSON 解析失败：缺少 suggestions 字段",
             "模型返回结果未通过结构校验",
             "网络连接中断"

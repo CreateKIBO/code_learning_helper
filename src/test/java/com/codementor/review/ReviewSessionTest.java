@@ -246,6 +246,32 @@ class ReviewSessionTest {
         assertEquals(0, session.getRevealedExerciseHints());
     }
 
+    @Test
+    void derivesBusyStateAcrossEveryModelBackedOperation() {
+        ReviewSession session = new ReviewSession();
+        assertFalse(session.hasPendingOperation());
+
+        session.startRequest(context("review"), "review");
+        assertTrue(session.hasPendingOperation());
+        session.fail("review", "failed");
+        assertFalse(session.hasPendingOperation());
+
+        session.startVerification("S1", "verification");
+        assertTrue(session.hasPendingOperation());
+        session.failVerification("S1", "verification", "failed");
+        assertFalse(session.hasPendingOperation());
+
+        session.startFollowUp("S1", "follow-up", "为什么？");
+        assertTrue(session.hasPendingOperation());
+        session.cancelFollowUp("S1");
+        assertFalse(session.hasPendingOperation());
+
+        session.startExercise("exercise");
+        assertTrue(session.hasPendingOperation());
+        session.cancelExercise();
+        assertFalse(session.hasPendingOperation());
+    }
+
     private static ReviewContext context(String fingerprint) {
         return new ReviewContext(
                 "src/Demo.java",

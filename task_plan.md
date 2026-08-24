@@ -66,3 +66,109 @@
 
 ## Follow-up Errors Encountered
 - 首轮正文超时测试证明 `HttpRequest.timeout` 没有终止已收到响应头但正文停滞的 `BodySubscriber`，2 秒测试保护触发；实现改为对 `sendAsync` 返回的“完整响应 Future”显式 `get(timeout)`，超时同步取消 Future 和正文订阅。
+
+---
+
+# Follow-up Plan: OpenAI 兼容端点 404 修复
+
+## Goal
+定位 DeepSeek 等 OpenAI 兼容服务配置后连接测试返回 404 的原因，让设置页能安全接受服务根地址或完整 chat completions 地址，提供不包含 API Key 的常用模型预设，并重新生成经过验证的补丁安装包。
+
+## Phases
+- [x] Phase 1: 建立安全边界与诊断计划
+- [x] Phase 2: 核对现有 URL 契约、DeepSeek 官方契约并复现 404 路径
+- [x] Phase 3: 实现端点规范化、提示、常用模型预设与回归测试
+- [x] Phase 4: 完整验证、文档更新与重新打包
+
+## Key Questions
+1. 插件当前把用户输入当作服务根地址，还是完整 `chat/completions` 请求地址？
+2. DeepSeek 的官方根地址、兼容 `/v1` 地址和最终请求路径分别是什么？
+3. 如何兼容现有智谱完整端点，同时避免重复追加路径或静默改写任意自定义 URL？
+4. 404 错误能否给出不暴露密钥、可直接操作的配置提示？
+
+## Security Boundary
+- 用户在聊天中粘贴的 API Key 不写入仓库、命令、日志或测试夹具，也不转交外部模型；建议用户立即撤销并轮换。
+
+## Decisions Made
+- 保持兼容现有完整端点；仅对无路径根地址、以 `/v1` 结尾的标准 Base URL，以及 DeepSeek 官方 `/beta` Base URL补全 `/chat/completions`。
+- 对 DeepSeek 官方端点的已停用模型名给出本地校验错误，不静默替换用户选择。
+- HTTP 404 同时提示检查最终请求路径和模型名；连接测试显示实际规范化后的请求地址。
+- 常用模型预设只拥有显示名、端点和模型名，不拥有 API Key；选择预设会清空当前未保存的 Key 输入框，但不会删除 PasswordSafe 中已有的凭据。
+
+## Status
+**Complete** - 117 项全量回归、项目/结构检查、IDEA 2024.1.1 Plugin Verifier、1.2.2 ZIP 内容与哈希均已验证。
+
+## Follow-up Errors Encountered
+- 第一次无密钥端点探测被受限网络阻止并返回 curl 连接错误；按网络沙箱流程放行后，使用无效占位密钥的根地址、`/v1` 和完整地址均到达 DeepSeek 认证层并返回 401，未使用用户密钥。
+- 首轮聚焦回归在编译期发现连接失败提示的 `catch` 引用了 `try` 内局部配置变量；改为引用同一方法外层已验证的规范化端点，未改变请求行为。
+- 产物核验时 `jar xf` 在仓库根目录解出一个临时 `META-INF/PRIVACY.md`；确认目录仅含该构建副本后立即删除，不属于源码变更，安装包本身未修改。
+
+---
+
+# Follow-up Plan: 导师请求超时与紧凑加载动效
+
+## Goal
+修复“连接测试成功但真实评审/解释请求在 30 秒时失败”的超时策略差异，并在 Tool Window 的导师与其他异步操作期间显示小型、原生、生命周期安全的加载动效，完成补丁版本验证与打包。
+
+## Phases
+- [x] Phase 1: 建立复现假设、UI 约束与计划
+- [x] Phase 2: 审计连接测试/真实请求超时、取消和所有忙碌状态
+- [x] Phase 3: 实现分层超时与统一加载指示器并补充测试
+- [x] Phase 4: 全量验证、文档更新与重新打包
+
+## Key Questions
+1. 真实评审是否与最小连接测试错误地共享同一个 30 秒完整响应超时？
+2. 评审、解释、验证、追问和练习应使用多长上限，且如何保持用户取消即时生效？
+3. Tool Window 是否已有统一会话忙碌状态可作为动效的唯一数据源？
+4. 加载动效如何保持约 16px、无布局跳动、原生主题和屏幕阅读器可理解？
+
+## UI Direction
+- 复用 IntelliJ 原生动画组件与主题颜色，不引入自定义 GIF、品牌色或大面积遮罩。
+- 动效固定在局部状态区，仅忙碌时运行；完成、失败、取消和面板销毁时统一停止。
+
+## Decisions Made
+- 连接测试继续使用 30 秒完整响应超时；实际导师操作使用 120 秒完整响应超时。连接建立仍为 10 秒，用户取消继续通过 Future/HTTP 订阅中断即时传播。
+- `ReviewSession.hasPendingOperation()` 成为所有模型忙碌状态的唯一派生规则，覆盖评审/解释、修改验证、追问和练习。
+- Tool Window 顶部保留一个固定尺寸的 IntelliJ `AsyncProcessIcon` 槽位，空闲时 suspend 且不绘制，忙碌时 resume；本地统计、导出和清理 Future 也纳入显示。
+
+## Status
+**Complete** - 聚焦回归 22 项与全量 120 项测试均通过，项目/结构检查及 IDEA 2024.1.1 Plugin Verifier 通过，1.2.3 ZIP 内容、版本、大小和 SHA-256 已核验。
+
+## Follow-up Errors Encountered
+- 首轮 UI 生命周期测试发现 `AsyncProcessIcon` 在无头环境或 UI delegate 尚未安装时可能没有 `AccessibleContext`；提示文本与辅助信息已集中到空值安全方法，避免面板初始化被可选无障碍增强阻断，动画生命周期保持不变。
+- 第二轮 UI 测试确认 IntelliJ `Animator` 会在组件未挂到可显示窗口时自动暂停，因此无头测试改为断言同一忙碌计算产生的用户可见提示、紧凑尺寸和销毁状态；实际窗口中的 `resume/suspend` 调用仍由生产代码执行。
+- 审计隐藏 Tool Window 生命周期时发现 `AnimatedIcon.isRunning()` 表示“当前动画器是否实际运行”，并不表示请求的忙碌状态；若后台任务在窗口隐藏期间结束，条件式 suspend 可能遗漏。实现改为每次渲染都按派生 busy 状态显式 `resume` 或 `suspend`，避免重新打开面板后残留动画。
+
+---
+
+# Follow-up Plan: 模型空内容与导师成功闭环
+
+## Goal
+定位“模型返回格式不正确：模型返回内容为空”的确切响应形态，修复 OpenAI 兼容正文提取、输出预算或结构化协议中的根因，让导师真实请求成功，同时保留隐私、容量、取消与兼容边界并重新打包。
+
+## Phases
+- [x] Phase 1: 建立安全边界、路由与诊断计划
+- [x] Phase 2: 追踪空内容错误来源并核对当前服务商响应契约
+- [x] Phase 3: 构造可重复响应夹具，实施最小兼容修复并聚焦验证
+- [x] Phase 4: 端到端导师链路验证、全量回归、兼容检查与重新打包
+
+## Key Questions
+1. 空字符串来自 `message.content`、推理模型的替代字段、输出被长度截断，还是 JSON mode 行为？
+2. 连接测试为何成功，而携带完整教学提示的结构化请求失败？
+3. 是否需要解析 `reasoning_content`、拒绝 `finish_reason=length`，或调整 `max_tokens`/`response_format`？
+4. 如何在不记录原始模型正文和 API Key 的前提下给出可操作诊断并证明导师链路成功？
+
+## Security Boundary
+- 不把聊天中出现过的 API Key 写入仓库、命令、日志或测试夹具；优先使用本地确定性 HTTP 夹具和无密钥官方契约核对。
+- 不为“成功”而放宽源码发送范围、响应容量、端点授权或证据落地校验。
+
+## Decisions Made
+- 不把 `reasoning_content` 当成导师最终答案，因为它是思考过程且不满足教学 JSON 契约；对 DeepSeek 官方端点显式关闭思考模式。
+- DeepSeek 官方结构化操作使用 8192 输出 tokens，其他端点继续 2400，避免把服务商专属修复扩散到任意自定义模型。
+- 两次有限尝试保持不变，但第二次会追加固定、无用户数据的协议修复指令；空 content 根据 `finish_reason` 给出安全诊断。
+
+## Status
+**Complete** - 空 content 后导师重试成功的端到端链路、124 项全量测试、项目/结构检查、IDEA 2024.1.1 Plugin Verifier 以及 1.2.4 ZIP 内容/版本/哈希均已验证。
+
+## Follow-up Errors Encountered
+- 暂无；官方契约核对、首轮实现编译和 13 项聚焦回归均通过。

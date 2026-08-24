@@ -15,12 +15,15 @@ import com.codementor.settings.ApiKeyStore;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.util.concurrency.AppExecutorUtil;
 
 import java.net.http.HttpClient;
 import java.time.Duration;
+import java.util.Objects;
 import java.util.concurrent.Future;
+import java.util.function.Supplier;
 
 /**
  * GLM/OpenAI-compatible model client. Every operation uses the immutable configuration supplied
@@ -30,18 +33,34 @@ public final class ZhiPuModelClient implements ReviewService {
 
     private static final Logger LOG = Logger.getInstance(ZhiPuModelClient.class);
     private static final Gson GSON = new Gson();
-    private static final int MAX_TOKENS = 2_400;
+    private static final int DEFAULT_MAX_TOKENS = 2_400;
+    private static final int DEEPSEEK_STRUCTURED_MAX_TOKENS = 8_192;
+    private static final String STRUCTURED_RETRY_INSTRUCTION =
+            "上一次响应没有产生可解析的最终答案。请跳过思考过程，"
+                    + "从字符 { 开始，立即只输出符合既定 schema 的完整 JSON；"
+                    + "不要 markdown、前言、解释或空白占位。";
+    private static final String TEXT_RETRY_INSTRUCTION =
+            "上一次响应没有产生符合要求的最终答案。请立即直接回答，"
+                    + "不要输出思考过程，并严格遵守上一条消息的格式要求。";
+    static final Duration MENTOR_REQUEST_TIMEOUT = Duration.ofSeconds(120);
+    static final Duration CONNECTION_TEST_TIMEOUT = Duration.ofSeconds(30);
 
     private final ModelHttpTransport transport;
+    private final Supplier<String> apiKeySupplier;
 
     public ZhiPuModelClient() {
         this(HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
-                .build());
+                .build(), ApiKeyStore::getApiKey);
     }
 
     ZhiPuModelClient(HttpClient client) {
-        transport = new ModelHttpTransport(client);
+        this(client, ApiKeyStore::getApiKey);
+    }
+
+    ZhiPuModelClient(HttpClient client, Supplier<String> apiKeySupplier) {
+        transport = new ModelHttpTransport(client, MENTOR_REQUEST_TIMEOUT);
+        this.apiKeySupplier = Objects.requireNonNull(apiKeySupplier, "apiKeySupplier");
     }
 
     @Override
@@ -106,7 +125,7 @@ public final class ZhiPuModelClient implements ReviewService {
                     context.getReviewMode(),
                     context.isTruncated());
             String requestBody = buildRequestBody(
-                    config.model(),
+                    config,
                     PromptBuilder.buildSystemPrompt(context.getReviewMode()),
                     userPrompt,
                     true);
@@ -159,7 +178,7 @@ public final class ZhiPuModelClient implements ReviewService {
             String maskedCurrentCode = PrivacyFilter.mask(
                     request.getCurrentContext().getCode());
             String body = buildRequestBody(
-                    config.model(),
+                    config,
                     PromptBuilder.buildVerificationSystemPrompt(),
                     userPrompt,
                     true);
@@ -209,7 +228,7 @@ public final class ZhiPuModelClient implements ReviewService {
                     config.teachingLevel(),
                     request.getContext().getJavaWebContext()));
             String body = buildRequestBody(
-                    config.model(),
+                    config,
                     PromptBuilder.buildFollowUpSystemPrompt(),
                     userPrompt,
                     false);
@@ -249,7 +268,7 @@ public final class ZhiPuModelClient implements ReviewService {
             }
             String userPrompt = PrivacyFilter.mask(PromptBuilder.buildExerciseUserPrompt(request));
             String body = buildRequestBody(
-                    config.model(),
+                    config,
                     PromptBuilder.buildExerciseSystemPrompt(),
                     userPrompt,
                     true);
@@ -286,17 +305,43 @@ public final class ZhiPuModelClient implements ReviewService {
             throws InterruptedException,
                     ModelHttpTransport.ApiException,
                     JsonResponseParser.ParseException {
-        JsonResponseParser.ParseException lastError = null;
+        return sendAndParseWithRetry(
+                transport,
+                config,
+                apiKey,
+                requestBody,
+                requestId,
+                operation,
+                parser);
+    }
+
+    private static <T> T sendAndParseWithRetry(
+            ModelHttpTransport transport,
+            ModelRequestConfig config,
+            String apiKey,
+            String requestBody,
+            String requestId,
+            String operation,
+            StructuredParser<T> parser)
+            throws InterruptedException,
+                    ModelHttpTransport.ApiException,
+                    JsonResponseParser.ParseException {
+        String attemptBody = requestBody;
         for (int attempt = 1; attempt <= 2; attempt++) {
             try {
-                return parser.parse(transport.send(config, apiKey, requestBody));
+                return parser.parse(transport.send(config, apiKey, attemptBody));
+            } catch (ModelHttpTransport.EmptyContentException e) {
+                LOG.warn("[" + shortId(requestId) + "] " + operation
+                        + " 未收到最终答案（第 " + attempt + " 次）");
+                if (attempt == 2) throw e;
             } catch (JsonResponseParser.ParseException e) {
-                lastError = e;
                 LOG.warn("[" + shortId(requestId) + "] " + operation
                         + " 响应格式校验失败（第 " + attempt + " 次）");
+                if (attempt == 2) throw e;
             }
+            attemptBody = buildProtocolRetryBody(requestBody);
         }
-        throw lastError;
+        throw new IllegalStateException("unreachable retry state");
     }
 
     @FunctionalInterface
@@ -305,14 +350,25 @@ public final class ZhiPuModelClient implements ReviewService {
     }
 
     static String buildRequestBody(
-            String model,
+            ModelRequestConfig config,
             String systemPrompt,
             String userPrompt,
             boolean structuredOutput) {
         JsonObject body = new JsonObject();
-        body.addProperty("model", model);
+        boolean officialDeepSeek =
+                ModelEndpointValidator.isOfficialDeepSeekEndpoint(config.endpoint());
+        body.addProperty("model", config.model());
         body.addProperty("temperature", 0.3);
-        body.addProperty("max_tokens", MAX_TOKENS);
+        body.addProperty(
+                "max_tokens",
+                structuredOutput && officialDeepSeek
+                        ? DEEPSEEK_STRUCTURED_MAX_TOKENS
+                        : DEFAULT_MAX_TOKENS);
+        if (officialDeepSeek) {
+            JsonObject thinking = new JsonObject();
+            thinking.addProperty("type", "disabled");
+            body.add("thinking", thinking);
+        }
         if (structuredOutput) {
             JsonObject responseFormat = new JsonObject();
             responseFormat.addProperty("type", "json_object");
@@ -326,6 +382,20 @@ public final class ZhiPuModelClient implements ReviewService {
         return GSON.toJson(body);
     }
 
+    /** Changes the second attempt so providers with occasional empty JSON output do not replay it. */
+    static String buildProtocolRetryBody(String requestBody) {
+        JsonObject body = JsonParser.parseString(requestBody).getAsJsonObject();
+        JsonArray messages = body.getAsJsonArray("messages");
+        JsonObject lastUserMessage = messages.get(messages.size() - 1).getAsJsonObject();
+        String originalPrompt = lastUserMessage.get("content").getAsString();
+        String retryInstruction = body.has("response_format")
+                ? STRUCTURED_RETRY_INSTRUCTION
+                : TEXT_RETRY_INSTRUCTION;
+        lastUserMessage.addProperty("content", originalPrompt + "\n\n" + retryInstruction);
+        body.addProperty("temperature", 0.1);
+        return GSON.toJson(body);
+    }
+
     private static JsonObject message(String role, String content) {
         JsonObject message = new JsonObject();
         message.addProperty("role", role);
@@ -333,8 +403,8 @@ public final class ZhiPuModelClient implements ReviewService {
         return message;
     }
 
-    private static String requireApiKey() {
-        String apiKey = ApiKeyStore.getApiKey();
+    private String requireApiKey() {
+        String apiKey = apiKeySupplier.get();
         return apiKey == null || apiKey.isBlank() ? null : apiKey;
     }
 
@@ -371,7 +441,8 @@ public final class ZhiPuModelClient implements ReviewService {
         ModelEndpointValidator.Result endpoint =
                 ModelEndpointValidator.validate(url, allowInsecureLocalEndpoint);
         if (!endpoint.valid()) return new TestResult(false, endpoint.errorMessage());
-        String modelError = ModelEndpointValidator.validateModel(model);
+        String modelError = ModelEndpointValidator.validateModelForEndpoint(
+                model, endpoint.normalizedEndpoint());
         if (!modelError.isEmpty()) return new TestResult(false, modelError);
         if (apiKey == null || apiKey.isBlank()) {
             return new TestResult(false, "API Key 不能为空");
@@ -384,20 +455,44 @@ public final class ZhiPuModelClient implements ReviewService {
                     ModelRequestConfig.CURRENT_PROMPT_SCHEMA);
             ModelHttpTransport transport = new ModelHttpTransport(HttpClient.newBuilder()
                     .connectTimeout(Duration.ofSeconds(10))
-                    .build());
+                    .build(), CONNECTION_TEST_TIMEOUT);
             String body = buildRequestBody(
-                    config.model(),
-                    PromptBuilder.buildSystemPrompt(),
-                    "只回复 OK",
-                    false);
-            String content = transport.send(config, apiKey.trim(), body);
+                    config,
+                    "你正在执行 CodeMentor 连接兼容性测试，不分析真实项目。"
+                            + "只输出严格 JSON："
+                            + "{\"summary\":\"连接正常\",\"suggestions\":[]}",
+                    "请返回上述 JSON，不要 markdown 或额外文字。",
+                    true);
+            ReviewResult result = sendAndParseWithRetry(
+                    transport,
+                    config,
+                    apiKey.trim(),
+                    body,
+                    "connection",
+                    "导师协议测试",
+                    JsonResponseParser::parseReview);
             return new TestResult(true, "模型：" + config.model()
-                    + "，返回长度 " + content.length());
+                    + "，导师 JSON 协议可用（摘要长度 "
+                    + result.summary().length() + "）");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new TestResult(false, "连接测试已取消");
+        } catch (ModelHttpTransport.EmptyContentException e) {
+            return new TestResult(
+                    false,
+                    "网络与鉴权已通过，但导师协议没有最终内容：" + e.getMessage()
+                            + "；实际请求：" + endpoint.normalizedEndpoint());
+        } catch (JsonResponseParser.ParseException e) {
+            return new TestResult(
+                    false,
+                    "网络与鉴权已通过，但导师 JSON 协议不兼容：" + e.getMessage()
+                            + "；实际请求：" + endpoint.normalizedEndpoint());
         } catch (Exception e) {
-            return new TestResult(false, e.getMessage());
+            String message = e.getMessage() == null || e.getMessage().isBlank()
+                    ? "连接测试失败，服务端未返回详细信息"
+                    : e.getMessage();
+            return new TestResult(
+                    false, message + "；实际请求：" + endpoint.normalizedEndpoint());
         }
     }
 

@@ -79,3 +79,86 @@
 - `verifyPluginProjectConfiguration`、`verifyPluginStructure`：通过。
 - Plugin Verifier 1.409：IDEA 2024.1.1（IC-241.15989.150）`Compatible`，本次无在线证书链告警。
 - ZIP：260,704 bytes；SHA-256 `62EB2B6A08E8659EEC3734EA8A8C644BC68DAC496D14B1F25850FA5A0C98E625`。
+
+## 2026-08-24 - OpenAI 兼容端点 404 跟进
+
+### Symptom and security boundary
+- 用户报告 DeepSeek API Key 与 URL 配置后，连接测试稳定返回 HTTP 404。
+- 用户在聊天中粘贴了完整密钥；该密钥不进入仓库、命令、日志或自动化测试，并应立即撤销/轮换。
+- 初步检索显示插件配置字段虽然名为 `apiBaseUrl`，传输层却把它直接作为最终 POST URI，默认值本身也是完整 `/chat/completions` 地址；需要确认 UI 是否误导用户输入了根地址。
+
+### Confirmed root causes
+- DeepSeek 官方 Quick Start 把 OpenAI `base_url` 定义为 `https://api.deepseek.com`，实际 Chat API 是 `POST /chat/completions`；官方集成文档也给出 `https://api.deepseek.com/v1/chat/completions`。
+- 插件的 `ModelEndpointValidator` 旧实现拒绝无路径根地址，并把 `/v1` 原样作为最终 POST 地址；设置字段的 “Base URL” 命名与传输层的“最终端点”语义不一致。
+- DeepSeek 2026-04-24 变更记录宣布 `deepseek-chat` 与 `deepseek-reasoner` 于 2026-07-24 停用；当前官方模型名为 `deepseek-v4-flash` 与 `deepseek-v4-pro`。正确路径配旧模型仍可能返回 404。
+- 受限网络下 curl 首次返回连接失败；放行后用无效占位密钥访问根地址、`/v1` 和完整端点均返回 401，证明本机到 DeepSeek 的网络/TLS/认证入口可达。认证失败发生在路由/模型检查之前，因而不需要也不应使用已泄露的真实密钥定位本插件的 URL 拼接问题。
+
+### Preset scope
+- 用户追加要求预置常见模型配置，API Key 留空。
+- 只选择有官方 OpenAI Chat Completions 兼容说明且能接受现有 Bearer + messages + JSON object 契约的配置：智谱 GLM-5.2、DeepSeek V4 Flash/Pro、通义千问 Qwen Plus、OpenAI GPT-4.1 mini、Gemini 3.7 Flash。
+- 预设是 UI 派生状态，不新增持久化字段；未知或用户编辑过的组合显示“自定义”。
+
+### Focused verification
+- Base URL 规范化、HTTP 404、完整正文超时、真实本机 `/v1/chat/completions` 路径、官方 DeepSeek 旧模型拦截、Settings 模态回调和模型预设聚焦测试均通过。
+- Settings 交互测试确认：选择 DeepSeek 预设后地址与模型正确填入，尚未保存的 API Key 输入框被清空。
+
+### Final 1.2.2 verification
+- 完整测试：117 项，0 failures / errors / skipped，25 个测试套件。
+- `verifyPluginProjectConfiguration`、`verifyPluginStructure`：通过。
+- Plugin Verifier 1.409：`com.codementor:1.2.2` 对 IDEA 2024.1.1（IC-241.15989.150）为 `Compatible`。
+- ZIP：265,427 bytes；SHA-256 `04253FE4B8B4394063DCBBC2D751552C1788622765B8E70E69325B3EB7099D48`。
+- ZIP 只包含 `code-mentor/lib/code-mentor-1.2.2.jar`；JAR 内已核对 plugin.xml、LICENSE、NOTICE、PRIVACY.md 与图标，元数据为 ID `com.codementor`、版本 `1.2.2`、兼容范围 `241` 至 `241.*`。
+
+## 2026-08-24 - 导师请求超时与加载动效
+
+### Initial evidence
+- 用户确认设置页连接测试已经成功，但真实使用稳定显示“导师请求失败 / 请求超时”。
+- `ModelHttpTransport` 当前默认完整响应超时仍为 30 秒；`ZhiPuModelClient` 的连接测试和真实评审/解释/验证/追问/练习都构造相同默认 transport。最小“只回复 OK”能在 30 秒内成功，不能证明结构化代码评审也能在同一时间内完成。
+- UI/UX 检索建议动效克制、反馈靠近触发操作并保持可访问性；本插件应优先使用 IntelliJ 原生小型进度图标，避免额外色彩、遮罩或布局缩放。
+
+### Confirmed design
+- IDEA 2024.1 的 `com.intellij.util.ui.AsyncProcessIcon` 是一个实现 `Disposable` 的 Swing 组件，提供 `resume()`、`suspend()`、`isRunning()` 和 `dispose()`；适合由 Tool Window 生命周期直接管理。
+- 会话内已有四类独立忙碌信号：`ReviewStatus.REQUESTING`、任意 `VerificationStatus.VERIFYING`、任意 `FollowUpResult.Status.REQUESTING`、`ExerciseResult.Status.GENERATING`。应在 `ReviewSession` 集中派生，UI 不再重复遍历规则。
+- Tool Window 另有学习统计、Markdown 导出和清除历史三个本地 Future；它们不是会话模型状态，需要与会话忙碌状态在面板内合并，但仍不新增第二份业务状态。
+
+### Implemented and focused verification
+- `ZhiPuModelClient` 的真实导师 transport 显式使用 120 秒，连接探测 transport 显式使用 30 秒；二者继续使用 10 秒连接建立上限以及同一有界正文/取消实现。
+- `ReviewSession.hasPendingOperation()` 集中派生所有模型忙碌状态；Tool Window 的原生 `AsyncProcessIcon` 合并本地统计、导出和清理 Future，固定占位、空闲不绘制、面板销毁时释放。
+- 审计发现隐藏窗口中的 `Animator.isRunning()` 不代表请求状态；每次刷新改为无条件按 busy 调用 `resume/suspend`，避免任务在隐藏期间结束后残留动画。
+- 聚焦回归 22 项全部通过，覆盖完整正文超时、30/120 秒策略、四类 session 忙碌生命周期以及 Tool Window 紧凑尺寸、忙闲提示和销毁。
+
+### Final 1.2.3 verification
+- 完整测试：120 项，0 failures / errors / skipped，26 个测试套件。
+- `verifyPluginProjectConfiguration`、`verifyPluginStructure`：通过。
+- Plugin Verifier 1.409：`com.codementor:1.2.3` 对 IDEA 2024.1.1（IC-241.15989.150）为 `Compatible`。
+- ZIP：266,710 bytes；SHA-256 `61E88C85C786A8B0A236430BCF06CB1E1A2744BEDA2F26098B815085E37791AA`。
+- ZIP 只包含 `code-mentor/lib/code-mentor-1.2.3.jar`；JAR 内已核对 plugin.xml、LICENSE、NOTICE、PRIVACY.md 与图标，元数据为 ID `com.codementor`、版本 `1.2.3`、兼容范围 `241` 至 `241.*`。
+
+## 2026-08-24 - 模型最终内容为空跟进
+
+### Confirmed root cause
+- 用户实际错误由 `JsonResponseParser.validateResponseText()` 抛出：HTTP 200 且 `choices[0].message.content` 是空字符串；不是 URL、认证、超时或 JSON 外层响应读取失败。
+- `ZhiPuModelClient` 当前给连接测试与真实请求发送相同的普通 Chat Completions 形态，但真实结构化请求带 `response_format=json_object` 且 `max_tokens=2400`；格式失败后的第二次调用原样复用相同请求体。
+- DeepSeek 官方 JSON Output 文档明确记录该模式“有概率返回空 content”，建议修改 prompt 并合理设置 `max_tokens`：https://api-docs.deepseek.com/zh-cn/guides/json_mode/
+- DeepSeek V4 官方思考模式默认启用，推理放在 `reasoning_content`、最终答案才放在 `content`；当前插件既未显式关闭思考，也不能把内部推理当成最终教学 JSON：https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
+- 因此最小 `OK` 连接探测可以成功，而复杂导师 JSON 可能在有限输出预算内只产生推理或触发 DeepSeek 已知的空 content；原样重试无法执行官方建议的 prompt 缓解。
+
+### Fix direction
+- 只对 `api.deepseek.com` 官方 OpenAI 端点显式发送 `thinking.type=disabled`，不把 DeepSeek 私有字段发给其他兼容服务。
+- 官方 DeepSeek 的结构化请求把输出预算提高到 8192 tokens；其他端点保持 2400，避免破坏自定义小模型兼容性。
+- 空 `content` 由传输层结合 `finish_reason`/是否存在 reasoning 安全分类，不记录原文；结构化解析或空内容首次失败后，第二次请求追加明确的最终 JSON/纯文本修复指令，而不是原样重放。
+- 增加本机 HTTP 端到端测试：首个响应模拟空 content，第二个返回合法评审 JSON，必须通过真实 client worker 与 callback 成功闭环。
+
+### Implemented and focused verification
+- 官方 DeepSeek 请求体现在显式包含 `thinking.type=disabled`；结构化请求 `max_tokens=8192`，普通兼容端点继续 `2400` 且没有 `thinking` 字段。
+- `ModelHttpTransport.EmptyContentException` 只暴露安全分类；reasoning-only 测试确认错误消息不包含模拟思考原文。
+- 第二次有限尝试会基于原请求体追加固定协议修复指令，结构化请求明确从 `{` 开始只给完整 JSON，纯文本请求继续遵循各自系统格式。
+- 设置页连接测试改为合成 `ReviewResult` JSON 协议探测，并复用同一空内容/解析重试；不读取项目数据。
+- 13 项聚焦测试全部通过；其中 `ZhiPuModelClientReviewTest` 使用本机临时 HTTP 服务，第一次返回 reasoning-only 空 content，第二次返回合法空建议评审，真实 worker 最终触发成功 callback。
+
+### Final 1.2.4 verification
+- 完整测试：124 项，0 failures / errors / skipped，27 个测试套件。
+- `verifyPluginProjectConfiguration`、`verifyPluginStructure`：通过。
+- Plugin Verifier 1.409：`com.codementor:1.2.4` 对 IDEA 2024.1.1（IC-241.15989.150）为 `Compatible`。
+- ZIP：269,733 bytes；SHA-256 `F2DC02FA35DDABD6A52221E7B882018C29E31BCC112FD55343AADB05CF89BF02`。
+- ZIP 只包含 `code-mentor/lib/code-mentor-1.2.4.jar`；JAR 内已核对 plugin.xml、LICENSE、NOTICE、PRIVACY.md 与图标，元数据为 ID `com.codementor`、版本 `1.2.4`、兼容范围 `241` 至 `241.*`。

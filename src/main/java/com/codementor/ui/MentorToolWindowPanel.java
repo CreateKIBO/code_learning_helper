@@ -36,9 +36,11 @@ import com.intellij.ui.JBColor;
 import com.intellij.ui.components.JBLabel;
 import com.intellij.ui.components.JBScrollPane;
 import com.intellij.ui.components.JBTextArea;
+import com.intellij.util.ui.AsyncProcessIcon;
 import com.intellij.util.ui.JBUI;
 import org.jetbrains.annotations.NotNull;
 
+import javax.accessibility.AccessibleContext;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
@@ -81,6 +83,8 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
     private final Project project;
     private final JBLabel headerLabel = new JBLabel();
     private final JBLabel statusLabel = new JBLabel();
+    private final AsyncProcessIcon activityIndicator =
+            new AsyncProcessIcon("CodeMentor background activity");
     private final JButton reReviewButton = new JButton("重新评审");
     private final JButton exerciseButton = new JButton("生成小练习");
     private final JButton moreButton = new JButton("更多…");
@@ -122,6 +126,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         cancel(summaryFuture);
         cancel(clearHistoryFuture);
         ReviewSession.getInstance(project).removeListener(sessionListener);
+        if (!activityIndicator.isDisposed()) activityIndicator.dispose();
     }
 
     private void setupUi() {
@@ -156,6 +161,10 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         JPanel statusLine = new JPanel(new BorderLayout(8, 0));
         statusLine.setOpaque(false);
         statusLine.add(statusLabel, BorderLayout.CENTER);
+        activityIndicator.setPaintPassiveIcon(false);
+        activityIndicator.suspend();
+        updateActivityDescription("CodeMentor 当前没有后台任务");
+        statusLine.add(activityIndicator, BorderLayout.EAST);
         headerLine.add(statusLine, BorderLayout.CENTER);
 
         JPanel topPanel = new JPanel(new BorderLayout());
@@ -220,6 +229,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         statusLabel.setText(
                 "<html><b>状态：</b>" + statusText(status, mode) + "</html>");
         statusLabel.setForeground(statusColor(status));
+        refreshActivityIndicator(session);
 
         // 重新评审按钮：成功 / 过期 / 失败时可见。
         boolean showButton = status == ReviewStatus.SUCCESS
@@ -350,7 +360,8 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                 SwingConstants.LEFT);
         title.setFont(title.getFont().deriveFont(Font.BOLD));
         title.setForeground(JBColor.BLUE);
-        JBLabel detail = new JBLabel("正在等待模型并校验结构化结果，通常需要几秒钟。");
+        JBLabel detail = new JBLabel(
+                "正在等待模型并校验结果；复杂请求可能需要 1–2 分钟，可随时取消。");
         detail.setForeground(JBColor.GRAY);
         JButton cancel = new JButton("取消本次请求");
         cancel.setToolTipText("尽力停止本地请求；无法撤回服务端已经接收的数据");
@@ -729,6 +740,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                 .whenComplete((savedPath, error) -> SwingUtilities.invokeLater(() -> {
                     if (disposed || project.isDisposed()) return;
                     exportItem.setEnabled(true);
+                    refreshActivityIndicator();
                     if (error == null) {
                         Messages.showInfoMessage(
                                 project,
@@ -743,6 +755,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                                 "CodeMentor");
                     }
                 }));
+        refreshActivityIndicator();
     }
 
     private void showSendPreview() {
@@ -763,6 +776,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                 .whenComplete((summary, error) -> SwingUtilities.invokeLater(() -> {
                     if (disposed || project.isDisposed()) return;
                     summaryItem.setEnabled(true);
+                    refreshActivityIndicator();
                     if (error != null) {
                         Messages.showErrorDialog(
                                 project,
@@ -777,6 +791,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                             learningSummaryHtml(summary),
                             "CodeMentor 学习统计");
                 }));
+        refreshActivityIndicator();
     }
 
     private void showPrivacyAndData() {
@@ -819,6 +834,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                 .whenComplete((unused, error) -> SwingUtilities.invokeLater(() -> {
                     if (disposed || project.isDisposed()) return;
                     privacyItem.setEnabled(true);
+                    refreshActivityIndicator();
                     if (error == null) {
                         Messages.showInfoMessage(
                                 project, "本地学习记录已清除。", "CodeMentor");
@@ -828,6 +844,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                                 project, cause.getMessage(), "CodeMentor");
                     }
                 }));
+        refreshActivityIndicator();
     }
 
     private static String learningSummaryHtml(LearningSummary summary) {
@@ -888,6 +905,45 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         }
     }
 
+    private void refreshActivityIndicator() {
+        if (disposed || project.isDisposed()) return;
+        refreshActivityIndicator(ReviewSession.getInstance(project));
+    }
+
+    private void refreshActivityIndicator(ReviewSession session) {
+        if (activityIndicator.isDisposed()) return;
+        boolean busy = session.hasPendingOperation()
+                || isRunning(exportFuture)
+                || isRunning(summaryFuture)
+                || isRunning(clearHistoryFuture);
+        // Always update the requested state. AnimatedIcon#isRunning() reflects the
+        // animator's current visibility-dependent state, not the requested state;
+        // a hidden Tool Window may therefore report false even after resume().
+        if (busy) {
+            activityIndicator.resume();
+        } else {
+            activityIndicator.suspend();
+        }
+        String description = busy
+                ? "CodeMentor 正在处理导师请求或本地学习数据"
+                : "CodeMentor 当前没有后台任务";
+        updateActivityDescription(description);
+        activityIndicator.repaint();
+    }
+
+    /**
+     * 更新加载提示。部分无头测试和 UI delegate 尚未安装的生命周期阶段不会创建
+     * AccessibleContext，因此辅助信息必须是可选增强，不能阻断面板初始化。
+     */
+    private void updateActivityDescription(String description) {
+        activityIndicator.setToolTipText(description);
+        AccessibleContext accessibleContext = activityIndicator.getAccessibleContext();
+        if (accessibleContext != null) {
+            accessibleContext.setAccessibleName("CodeMentor 加载状态");
+            accessibleContext.setAccessibleDescription(description);
+        }
+    }
+
     private static String escape(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;")
@@ -897,5 +953,9 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
 
     private static void cancel(CompletableFuture<?> future) {
         if (future != null) future.cancel(true);
+    }
+
+    private static boolean isRunning(CompletableFuture<?> future) {
+        return future != null && !future.isDone();
     }
 }

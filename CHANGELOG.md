@@ -2,6 +2,65 @@
 
 本项目使用语义化版本号。本文件只记录已经落到代码、测试或发布工程中的变更。
 
+## [1.2.4] - 2026-08-24
+
+### Empty model content recovery
+
+- 修复 DeepSeek V4 默认思考和 JSON Output 偶发空 `content` 导致“模型返回内容为空”的问题：仅对官方 `api.deepseek.com` 请求显式关闭思考模式，结构化输出预算提高到 8,192 tokens。
+- 其他 OpenAI 兼容端点继续使用 2,400 tokens 且不接收 DeepSeek 私有字段；HTTP 正文、最终 content、解析字段和列表容量上限不变。
+- 首次空最终答案或结构校验失败后，第二次有限尝试追加固定协议修复指令并降低温度，不再原样重发。
+- 传输层结合 `finish_reason` 与 reasoning 是否存在区分长度耗尽、内容过滤、推理-only 和普通空答案；错误与日志不包含模型推理原文。
+
+### Representative connection test
+
+- 设置页连接测试改为固定、合成的导师 JSON 协议探测，不读取项目源码、规则、历史或会话内容。
+- 成功结果现在同时覆盖网络、鉴权、模型、JSON Output、最终 content 和基础解析；失败会区分网络错误与“鉴权已通过但导师协议不兼容”。
+- 新增本机端到端回归，模拟第一次空 content、第二次合法导师 JSON，并通过真实 worker、传输、重试、解析和 callback 成功闭环。
+
+### Release engineering
+
+- 版本更新为 `1.2.4`，发布流水线通过 124 项测试、项目配置与插件结构检查；Plugin Verifier 1.409 判定 IDEA 2024.1.1（IC-241.15989.150）`Compatible`。
+- ZIP 内嵌版本/兼容范围及 LICENSE、NOTICE、PRIVACY、图标均已核对；产物为 269,733 bytes，SHA-256 `F2DC02FA35DDABD6A52221E7B882018C29E31BCC112FD55343AADB05CF89BF02`。本地产物未执行 Marketplace 签名或发布。
+
+## [1.2.3] - 2026-08-24
+
+### Mentor request reliability
+
+- 将最小连接测试与真实导师操作的超时策略分离：连接测试保持 30 秒，评审、解释、修改验证、追问和练习使用 120 秒完整响应上限，修复连接成功后较大请求固定在 30 秒失败的问题。
+- 保留 10 秒连接建立上限、完整正文计时、有界正文订阅和用户取消传播；没有降低 2 MiB HTTP 响应和 64 Ki 字符模型内容限制。
+- 新增超时策略与所有模型操作统一忙碌状态的回归测试。
+
+### Compact activity feedback
+
+- 导师侧栏状态行新增 IntelliJ 原生小型加载图标，覆盖评审/解释、验证、追问、练习和面板发起的学习统计、导出、清理任务。
+- 固定保留紧凑图标槽位，空闲不绘制；成功、失败、取消、隐藏窗口中的任务结束和面板销毁都会停止或释放动画。
+- 辅助功能上下文在平台尚未创建时按可选增强处理，不会阻断 Tool Window 初始化。
+
+### Release engineering
+
+- 版本更新为 `1.2.3`，发布流水线通过 120 项测试、项目配置与插件结构检查；Plugin Verifier 1.409 判定 IDEA 2024.1.1（IC-241.15989.150）`Compatible`。
+- ZIP 内嵌版本/兼容范围及 LICENSE、NOTICE、PRIVACY、图标均已核对；产物为 266,710 bytes，SHA-256 `61E88C85C786A8B0A236430BCF06CB1E1A2744BEDA2F26098B815085E37791AA`。本地产物未执行 Marketplace 签名或发布。
+
+## [1.2.2] - 2026-08-24
+
+### OpenAI-compatible endpoint reliability
+
+- 修复设置字段按 SDK 的 Base URL 习惯填写时被直接当作最终 POST 地址的问题：HTTPS/允许的本机 HTTP 根地址、以 `/v1` 结尾的地址和 DeepSeek 官方 `/beta` 会补全标准 `/chat/completions` 路径。
+- 已有 `/chat/completions` 不会重复追加，其他带自定义路径的完整端点保持原样；保存设置、项目授权、缓存和真实请求继续共享同一个规范化端点。
+- 连接测试显示实际请求地址，HTTP 404 同时提示检查路径与模型名。
+- DeepSeek 官方端点在联网前拒绝已停用的 `deepseek-chat` / `deepseek-reasoner`，提示改用 `deepseek-v4-flash` 或 `deepseek-v4-pro`；第三方兼容端点不做服务商专属限制。
+
+### Provider presets
+
+- 新增不含 API Key 的智谱 GLM-5.2、DeepSeek V4 Flash/Pro、通义千问 Qwen Plus、OpenAI GPT-4.1 mini 与 Gemini 3.7 Flash 预设。
+- 预设选择只填写地址和模型、清空尚未保存的 Key 输入框，不删除 PasswordSafe 数据；未知组合自动显示“自定义”。
+- 新增 Base URL 到完整请求路径的集成测试、DeepSeek 模型兼容测试、404 诊断和设置页预设交互回归；未使用或保存用户在聊天中暴露的 API Key。
+
+### Release engineering
+
+- 版本更新为 `1.2.2`，发布流水线通过 117 项测试、项目配置与插件结构检查；Plugin Verifier 1.409 判定 IDEA 2024.1.1（IC-241.15989.150）`Compatible`。
+- ZIP 内嵌版本/兼容范围及 LICENSE、NOTICE、PRIVACY、图标均已核对；产物为 265,427 bytes，SHA-256 `04253FE4B8B4394063DCBBC2D751552C1788622765B8E70E69325B3EB7099D48`。本地产物未执行 Marketplace 签名或发布。
+
 ## [1.2.1] - 2026-08-24
 
 ### Settings and connection reliability

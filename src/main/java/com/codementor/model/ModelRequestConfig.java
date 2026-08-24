@@ -12,7 +12,7 @@ public record ModelRequestConfig(
         CodeMentorSettings.TeachingLevel teachingLevel,
         String promptSchemaVersion) {
 
-    public static final String CURRENT_PROMPT_SCHEMA = "2026-08-v4";
+    public static final String CURRENT_PROMPT_SCHEMA = "2026-08-v5";
 
     public ModelRequestConfig {
         endpoint = Objects.requireNonNull(endpoint, "endpoint");
@@ -29,7 +29,8 @@ public record ModelRequestConfig(
             throw new IllegalArgumentException(endpoint.errorMessage());
         }
         String model = settings.getModel().trim();
-        String modelError = ModelEndpointValidator.validateModel(model);
+        String modelError = ModelEndpointValidator.validateModelForEndpoint(
+                model, endpoint.normalizedEndpoint());
         if (!modelError.isEmpty()) {
             throw new IllegalArgumentException(modelError);
         }

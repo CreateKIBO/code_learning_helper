@@ -20,6 +20,32 @@ class ModelEndpointValidatorTest {
     }
 
     @Test
+    void resolvesOpenAiCompatibleBaseUrlsWithoutDuplicatingTheRoute() {
+        assertEquals(
+                "https://api.deepseek.com/chat/completions",
+                ModelEndpointValidator.validate(
+                        "https://api.deepseek.com", false).normalizedEndpoint());
+        assertEquals(
+                "https://api.deepseek.com/v1/chat/completions",
+                ModelEndpointValidator.validate(
+                        "https://api.deepseek.com/v1/", false).normalizedEndpoint());
+        assertEquals(
+                "https://api.deepseek.com/beta/chat/completions",
+                ModelEndpointValidator.validate(
+                        "https://api.deepseek.com/beta", false).normalizedEndpoint());
+        assertEquals(
+                "https://api.deepseek.com/v1/chat/completions",
+                ModelEndpointValidator.validate(
+                        "https://api.deepseek.com/v1/chat/completions/", false)
+                        .normalizedEndpoint());
+        assertEquals(
+                "https://example.com/custom/generate",
+                ModelEndpointValidator.validate(
+                        "https://example.com/custom/generate", false)
+                        .normalizedEndpoint());
+    }
+
+    @Test
     void rejectsCredentialBearingOrAmbiguousEndpoints() {
         assertFalse(ModelEndpointValidator.validate(
                 "https://user:secret@example.com/chat", false).valid());
@@ -27,8 +53,6 @@ class ModelEndpointValidatorTest {
                 "https://example.com/chat?token=x", false).valid());
         assertFalse(ModelEndpointValidator.validate(
                 "https://example.com/chat#fragment", false).valid());
-        assertFalse(ModelEndpointValidator.validate(
-                "https://example.com", false).valid());
     }
 
     @Test
@@ -55,5 +79,18 @@ class ModelEndpointValidatorTest {
         assertEquals("", ModelEndpointValidator.validateModel("provider/model:v1"));
         assertFalse(ModelEndpointValidator.validateModel("bad model").isEmpty());
         assertFalse(ModelEndpointValidator.validateModel("model\nname").isEmpty());
+    }
+
+    @Test
+    void rejectsRetiredModelNamesOnlyForTheOfficialDeepSeekEndpoint() {
+        String officialEndpoint = "https://api.deepseek.com/chat/completions";
+        assertTrue(ModelEndpointValidator.validateModelForEndpoint(
+                "deepseek-chat", officialEndpoint).contains("已停用"));
+        assertTrue(ModelEndpointValidator.validateModelForEndpoint(
+                "deepseek-reasoner", officialEndpoint).contains("已停用"));
+        assertEquals("", ModelEndpointValidator.validateModelForEndpoint(
+                "deepseek-v4-flash", officialEndpoint));
+        assertEquals("", ModelEndpointValidator.validateModelForEndpoint(
+                "deepseek-chat", "https://proxy.example.com/v1/chat/completions"));
     }
 }

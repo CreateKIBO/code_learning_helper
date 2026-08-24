@@ -94,10 +94,19 @@ final class ModelHttpTransport {
         String responseBody = new String(response.body(), StandardCharsets.UTF_8);
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             String hint = extractApiError(responseBody);
-            throw new ApiException("服务端返回 " + response.statusCode()
-                    + (hint.isEmpty() ? "" : "：" + hint));
+            throw new ApiException(buildServerError(response.statusCode(), hint));
         }
         return extractContent(responseBody);
+    }
+
+    private static String buildServerError(int statusCode, String hint) {
+        String message = "服务端返回 " + statusCode
+                + (hint.isEmpty() ? "" : "：" + hint);
+        if (statusCode == 404) {
+            return message + "；未找到接口或模型，请检查最终请求地址"
+                    + "是否以 /chat/completions 结尾，并确认模型名称受服务商支持";
+        }
+        return message;
     }
 
     private static BoundedBodySubscriber boundedBodySubscriber(
@@ -132,13 +141,23 @@ final class ModelHttpTransport {
             if (choices == null || choices.isEmpty()) {
                 throw new ApiException("响应缺少 choices（内容可能被安全策略拦截）");
             }
-            JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
-            if (message == null
-                    || !message.has("content")
-                    || !message.get("content").isJsonPrimitive()) {
+            JsonObject choice = choices.get(0).getAsJsonObject();
+            JsonObject message = choice.getAsJsonObject("message");
+            if (message == null) {
                 throw new ApiException("响应缺少文本 message.content");
             }
-            String content = message.get("content").getAsString();
+            var contentElement = message.get("content");
+            if (contentElement == null || contentElement.isJsonNull()) {
+                throw emptyContentException(choice, message);
+            }
+            if (!contentElement.isJsonPrimitive()
+                    || !contentElement.getAsJsonPrimitive().isString()) {
+                throw new ApiException("响应中的 message.content 不是文本");
+            }
+            String content = contentElement.getAsString();
+            if (content.isBlank()) {
+                throw emptyContentException(choice, message);
+            }
             if (content.length() > MAX_CONTENT_CHARS) {
                 throw new ApiException("模型输出内容超过安全大小限制");
             }
@@ -148,6 +167,29 @@ final class ModelHttpTransport {
         } catch (Exception e) {
             throw new ApiException("模型响应 JSON 格式不正确");
         }
+    }
+
+    private static EmptyContentException emptyContentException(
+            JsonObject choice, JsonObject message) {
+        String finishReason = primitiveString(choice, "finish_reason");
+        if ("length".equals(finishReason)) {
+            return new EmptyContentException("模型输出达到上限，未产生最终答案");
+        }
+        if ("content_filter".equals(finishReason)) {
+            return new EmptyContentException("模型未产生最终答案，可能被内容安全策略拦截");
+        }
+        if (!primitiveString(message, "reasoning_content").isBlank()) {
+            return new EmptyContentException("模型只返回了推理过程，未产生最终答案");
+        }
+        return new EmptyContentException("模型返回的最终答案为空");
+    }
+
+    private static String primitiveString(JsonObject object, String key) {
+        if (object == null || !object.has(key) || object.get(key).isJsonNull()) return "";
+        var value = object.get(key);
+        return value.isJsonPrimitive() && value.getAsJsonPrimitive().isString()
+                ? value.getAsString()
+                : "";
     }
 
     private static String extractApiError(String responseBody) {
@@ -258,8 +300,15 @@ final class ModelHttpTransport {
         }
     }
 
-    static final class ApiException extends Exception {
+    static class ApiException extends Exception {
         ApiException(String message) {
+            super(message);
+        }
+    }
+
+    /** Retryable protocol response: HTTP succeeded but no final assistant text was produced. */
+    static final class EmptyContentException extends ApiException {
+        EmptyContentException(String message) {
             super(message);
         }
     }

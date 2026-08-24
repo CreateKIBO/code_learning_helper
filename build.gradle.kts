@@ -61,12 +61,12 @@ intellijPlatform {
         name = providers.gradleProperty("pluginName")
         version = providers.gradleProperty("pluginVersion")
         changeNotes = """
-            <h3>1.2.1 — 2026-08-24</h3>
+            <h3>1.2.4 — 2026-08-24</h3>
             <ul>
-                <li>Fixed API Key status checks and connection-test results remaining in a loading state while the modal Settings dialog is open.</li>
-                <li>Settings completion callbacks now run as guarded pure UI updates in the active modal dialog, and rejected background submissions restore the visible controls instead of leaving them busy.</li>
-                <li>Applied the 30-second model request timeout to the complete bounded response body, preventing a server that stalls after response headers from blocking connection tests or learning requests indefinitely.</li>
-                <li>Kept the 2 MiB response limit for both declared and chunked responses without materializing an unbounded body.</li>
+                <li>Prevents empty final answers from official DeepSeek V4 requests by disabling thinking mode for CodeMentor calls and providing a larger structured-output budget.</li>
+                <li>Changes the second bounded attempt with a strict protocol-repair instruction instead of replaying an identical prompt.</li>
+                <li>Classifies reasoning-only, output-limit, content-filter, and blank-final responses without exposing model reasoning text.</li>
+                <li>Upgrades the Settings connection check to a synthetic mentor JSON protocol probe that sends no project source code.</li>
             </ul>
         """.trimIndent()
 

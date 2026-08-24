@@ -104,7 +104,7 @@ flowchart TD
 | 追问 | 派发前检查当前评审上下文 | 问题绑定当前建议和上下文 |
 | 小练习 | 操作入口及异步历史读取结束、模型派发前各检查一次 | 请求只含知识点、有界历史中的不同评审次数、教学级别和 JavaWeb 角色，不含项目源码；派发前重新排除当前已解决/误报/低置信度主题 |
 
-“测试连接”是例外：它校验端点和模型后发送“只回复 OK”的最小提示，不读取项目上下文，因此不经过项目学习请求守卫。
+“测试连接”是例外：它校验端点和模型后发送固定、合成的导师 JSON 协议提示，验证网络、鉴权、模型、`response_format`、最终 `content` 与基础解析兼容性；它不读取项目源码、规则、历史或会话上下文，因此不经过项目学习请求守卫。
 
 ## 5. 一次评审的状态流
 
@@ -165,7 +165,13 @@ flowchart TD
 
 ## 7. HTTP 与响应边界
 
-`ModelHttpTransport` 负责 OpenAI 兼容的 `chat/completions` 契约：Bearer Authorization、UTF-8 JSON、30 秒完整请求超时和 2xx 状态检查。响应使用有界 `BodySubscriber`，并对 `sendAsync` 的“响应头 + 完整正文”Future 显式计时；只返回响应头后停止发送正文也会取消 Future 与订阅。边界如下：
+`ModelEndpointValidator` 先把明显的 OpenAI 兼容 Base URL 解析为最终请求地址：无路径根地址补 `/chat/completions`，以 `/v1` 结尾的地址补同一路径，DeepSeek 官方 `/beta` 也按其契约补全；已有 `/chat/completions` 不重复追加，其他自定义完整路径保持不变。项目授权、缓存键、设置持久化和 HTTP 请求共享这个规范化结果。DeepSeek 官方端点还会在本地拒绝已停用的旧模型名，第三方端点不做相同假设。
+
+`ModelProviderPreset` 只保存显示名、端点和模型名，不拥有 API Key，也不新增持久化状态。设置页根据当前规范化端点和模型派生预设选择；用户选择预设时清空尚未保存的密码框，但不调用 PasswordSafe 删除。手动修改为未知组合后恢复为“自定义”。
+
+`ModelHttpTransport` 负责 OpenAI 兼容的 `chat/completions` 契约：Bearer Authorization、UTF-8 JSON、调用方提供的完整请求超时和 2xx 状态检查。合成导师协议测试使用 30 秒，真实评审、解释、修改验证、追问和练习使用 120 秒。响应使用有界 `BodySubscriber`，并对 `sendAsync` 的“响应头 + 完整正文”Future 显式计时；只返回响应头后停止发送正文也会取消 Future 与订阅。HTTP 404 会提供路径和模型名两条排查方向。边界如下：
+
+官方 `api.deepseek.com` 的 V4 模型默认开启思考，且 JSON Output 官方记录了偶发空最终 `content`。请求构造器只对该官方主机发送 `thinking.type=disabled`，结构化操作使用 8,192 tokens 输出预算；其他兼容端点保持 2,400 且不接收 DeepSeek 私有字段。传输层不会把 `reasoning_content` 当作最终结果，而是结合 `finish_reason` 安全分类为推理-only、长度耗尽、内容过滤或普通空答案。首次空答案或解析失败后，第二次有限尝试在原用户提示末尾追加固定协议修复指令并降低温度，不改变发送上下文范围；第二次仍失败才进入 UI 错误态。
 
 - 完整 HTTP 响应体最多 2 MiB；声明长度超限会立即拒绝，不提供 `Content-Length` 的 chunked 响应也在订阅过程中有界取消；
 - `choices[0].message.content` 最多 64 Ki 个字符；
@@ -187,6 +193,8 @@ flowchart TD
 | PasswordSafe 状态/连接测试 | IntelliJ 应用执行器；纯 Swing 完成回调使用 `ModalityState.any()` 回到仍打开的 Settings；保存使用平台进度任务 | disposed + generation 拒绝旧回调，UI 销毁时取消读取或测试任务 |
 | 学习历史 | IntelliJ bounded application pool，单 worker | 保持写入、导出、汇总和清理顺序 |
 | `ReviewSession` 与 Swing UI | EDT | 后台回调通过 `invokeLater` / `finishOnUiThread` 切回 |
+
+Tool Window 的紧凑 `AsyncProcessIcon` 由 `ReviewSession.hasPendingOperation()` 的派生状态驱动，覆盖评审/解释、验证、追问和练习；面板自身管理的学习统计、导出和清理 Future 也合并到同一指示器。组件固定占位、空闲不绘制，并在每次渲染时显式设置 `resume/suspend`，所以任务在隐藏窗口中结束后不会留下陈旧动画；面板销毁时同时取消本地 Future 并释放图标。
 
 插件自己的生产任务提交到平台执行器或有界应用池，由平台负责线程复用，project/application service 的生命周期负责取消和收尾。
 
@@ -237,8 +245,8 @@ Markdown 导出不会读取或输出历史 `detail`，并转义 HTML、CommonMar
 - session、缓存和去重测试覆盖迟到响应、展开/追问/练习状态、完整配置键、原学习身份和容量；
 - PSI 与验证身份测试覆盖重载、签名变化、不同方法和选区拒绝；
 - 历史测试覆盖流式尾读、轮转、损坏输入、路径最小化、导出转义、置信度过滤、同次评审去重、知识点归一化和异步清理；
-- `ModelHttpTransportTest` 启动 JDK 本机临时 HTTP 服务，验证 Bearer 头、UTF-8 JSON、结构化输出声明、响应上限和有界错误信息这一真实传输契约。
+- `ModelHttpTransportTest` 启动 JDK 本机临时 HTTP 服务，验证 Bearer 头、UTF-8 JSON、结构化输出声明、响应上限、有界错误信息和 reasoning-only 空最终答案分类；`ZhiPuModelClientReviewTest` 进一步走真实 worker → HTTP → 协议重试 → 解析 → callback 链路，验证首个空 content 后第二次能够成功返回导师结果。
 
 发布流水线先固定校验 Gradle Wrapper launcher JAR，再运行 `verifyPluginProjectConfiguration`、`verifyPluginStructure`、`verifyPlugin` 和 `buildPlugin`，验证构建入口、IntelliJ Platform 配置、结构、兼容性和最终安装包。
 
-1.2.0 的完整测试结果、Plugin Verifier 结论、安装包内容和 SHA-256 以仓库 README 与安装说明中的本次发布验证记录为准。本文只描述已经落到代码的架构。
+当前版本的完整测试结果、Plugin Verifier 结论、安装包内容和 SHA-256 以仓库 README 与安装说明中的本次发布验证记录为准。本文只描述已经落到代码的架构。

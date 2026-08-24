@@ -9,6 +9,8 @@ public final class ModelEndpointValidator {
 
     private static final int MAX_ENDPOINT_LENGTH = 2_048;
     private static final int MAX_MODEL_LENGTH = 128;
+    private static final String CHAT_COMPLETIONS_PATH = "/chat/completions";
+    private static final String DEEPSEEK_HOST = "api.deepseek.com";
 
     private ModelEndpointValidator() {}
 
@@ -45,10 +47,6 @@ public final class ModelEndpointValidator {
         if (parsed.getPort() == 0 || parsed.getPort() < -1 || parsed.getPort() > 65_535) {
             return Result.invalid("API 地址端口无效");
         }
-        if (parsed.getRawPath() == null || parsed.getRawPath().isBlank()) {
-            return Result.invalid("API 地址必须包含请求路径");
-        }
-
         String normalizedScheme = scheme.toLowerCase(Locale.ROOT);
         String normalizedHost = host.toLowerCase(Locale.ROOT);
         if (normalizedHost.startsWith("[") && normalizedHost.endsWith("]")) {
@@ -64,12 +62,14 @@ public final class ModelEndpointValidator {
         }
 
         try {
+            String requestPath = resolveChatCompletionsPath(
+                    normalizedHost, parsed.getPath());
             URI normalized = new URI(
                     normalizedScheme,
                     null,
                     normalizedHost,
                     parsed.getPort(),
-                    parsed.getPath(),
+                    requestPath,
                     null,
                     null).normalize();
             return Result.valid(normalized.toASCIIString());
@@ -90,6 +90,51 @@ public final class ModelEndpointValidator {
             return "模型名称只能包含字母、数字、点、横线、下划线、冒号、斜杠或 @";
         }
         return "";
+    }
+
+    /** Adds the standard Chat Completions route only when the input is clearly a base URL. */
+    private static String resolveChatCompletionsPath(String host, String rawPath) {
+        String path = rawPath == null ? "" : rawPath;
+        String withoutTrailingSlash = stripTrailingSlashes(path);
+        if (withoutTrailingSlash.isEmpty()) {
+            return CHAT_COMPLETIONS_PATH;
+        }
+        if (withoutTrailingSlash.endsWith(CHAT_COMPLETIONS_PATH)) {
+            return withoutTrailingSlash;
+        }
+        if (withoutTrailingSlash.endsWith("/v1")
+                || (DEEPSEEK_HOST.equals(host)
+                        && withoutTrailingSlash.endsWith("/beta"))) {
+            return withoutTrailingSlash + CHAT_COMPLETIONS_PATH;
+        }
+        return path;
+    }
+
+    private static String stripTrailingSlashes(String path) {
+        int end = path.length();
+        while (end > 0 && path.charAt(end - 1) == '/') end--;
+        return path.substring(0, end);
+    }
+
+    public static String validateModelForEndpoint(
+            String rawModel, String normalizedEndpoint) {
+        String modelError = validateModel(rawModel);
+        if (!modelError.isEmpty()) return modelError;
+        if (isOfficialDeepSeekEndpoint(normalizedEndpoint)
+                && ("deepseek-chat".equalsIgnoreCase(rawModel.trim())
+                        || "deepseek-reasoner".equalsIgnoreCase(rawModel.trim()))) {
+            return "DeepSeek 官方已停用该旧模型名；请改用 deepseek-v4-flash"
+                    + " 或 deepseek-v4-pro";
+        }
+        return "";
+    }
+
+    static boolean isOfficialDeepSeekEndpoint(String endpoint) {
+        try {
+            return DEEPSEEK_HOST.equalsIgnoreCase(URI.create(endpoint).getHost());
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private static boolean isLoopbackHost(String host) {
