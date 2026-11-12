@@ -4,7 +4,8 @@
 
 ## 兼容范围
 
-- IntelliJ IDEA 2024.1.x（build `241.*`）。
+当前发行版 1.2.6 **仅支持 IntelliJ IDEA 2024.1.x**（`pluginSinceBuild=241`，`pluginUntilBuild=241.*`）。Plugin Verifier 已判定兼容 IntelliJ IDEA 2024.1.1（IC-241.15989.150）。2024.2 到当前最新稳定版 IntelliJ IDEA 2026.3 均暂不兼容，安装包会被 IDE 拒绝，将在后续开发中补充。完整对照表与后续计划见 [README 的 IDE 兼容性](../README.md#ide-兼容性)。
+
 - 从源码构建使用 JDK 17；从 ZIP 安装后使用 IDEA 自带的 JetBrains Runtime。
 - AI 功能需要使用者自行准备兼容模型服务及 API Key，可能产生第三方费用。
 - 默认端点是智谱开放平台 HTTPS 接口，默认模型是 `glm-5.2`；二者均可配置。
