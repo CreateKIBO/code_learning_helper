@@ -80,7 +80,28 @@ CodeMentor 是运行在 IntelliJ IDEA 内的个人学习插件。它围绕“理
 
 ## 环境与安装
 
-- IntelliJ IDEA 2024.1.x（build `241.*`）
+### IDE 兼容性
+
+核对日期：2026-11-12（新加坡时间）。官方构建号与平台 Java 版本依据 [Build Number Ranges](https://plugins.jetbrains.com/docs/intellij/build-number-ranges.html)；当时最新稳定版是 IntelliJ IDEA 2026.3。
+
+当前发行版 1.2.6 在 `gradle.properties` 中声明 `pluginSinceBuild=241`、`pluginUntilBuild=241.*`，因此**只有 IntelliJ IDEA 2024.1.x 可以安装**。2026-08-24 的 Plugin Verifier 已判定兼容 IntelliJ IDEA 2024.1.1（IC-241.15989.150）。
+
+目标是兼容 2024.1 到当前最新稳定版的全部 IntelliJ IDEA 大版本。在用 Plugin Verifier 完成验证并放宽 `until-build` 之前，下表中标记为「暂不兼容」的版本都无法安装，将在后续开发中补充。
+
+| IntelliJ IDEA | 构建分支 | 平台 Java | 当前状态 |
+|---|---|---|---|
+| 2024.1.x | 241 | 17 | 已声明，且已通过 Plugin Verifier |
+| 2024.2.x | 242 | 21 | 暂不兼容：现行 `until-build` 为 `241.*`，安装包会被 IDE 拒绝。待后续开发补充 |
+| 2024.3.x | 243 | 21 | 暂不兼容，待后续开发补充 |
+| 2025.1.x | 251 | 21 | 暂不兼容，待后续开发补充 |
+| 2025.2.x | 252 | 21 | 暂不兼容，待后续开发补充 |
+| 2025.3.x | 253 | 21 | 暂不兼容，待后续开发补充 |
+| 2026.1.x | 261 | 21 | 暂不兼容，待后续开发补充 |
+| 2026.2.x | 262 | 25 | 暂不兼容，待后续开发补充 |
+| 2026.3.x（当前最新稳定版） | 263 | 25 | 暂不兼容，待后续开发补充 |
+
+后续补充兼容性时，应继续以最低支持版本 2024.1 / JDK 17 为编译目标，以保证旧版本可安装；不要改为对着 2026.2 及以后（Java 25）编译后再回头支持 2024.1。放宽或取消 `until-build` 之前，必须用 Plugin Verifier 检查 242–263 各分支，并修复更新版本上的 API 问题。对照官方 [2024](https://plugins.jetbrains.com/docs/intellij/api-changes-list-2024.html)、[2025](https://plugins.jetbrains.com/docs/intellij/api-changes-list-2025.html)、[2026](https://plugins.jetbrains.com/docs/intellij/api-changes-list-2026.html) 不兼容 API 清单，当前主代码使用的 PasswordSafe、`ReadAction.nonBlocking`、`AnAction` / `ActionUpdateThread`、`ContentFactory.getInstance`、标准 `com.intellij.java` 依赖，以及写在 `@State.storages` 里的 `@Storage`，未直接命中已列出的破坏性变更。这不能代替 Verifier 和真机验证。后续验证时需重点查看：2025.3 起 Swing / AWT 输入处理不再自动持有 write-intent lock；2026.1 的 Java 插件模块拆分（本插件使用标准 `com.intellij.java` 依赖，按官方说明通常不受影响）；以及 2026.2 及以后运行在 Java 25 上。
+
 - 从源码构建使用 JDK 17；安装 ZIP 时无需额外安装插件运行时
 - Gradle Wrapper 9.0.0；CI 固定校验 Wrapper JAR，官方发行包 URL 与 SHA-256 也已固定
 - 默认模型端点：`https://open.bigmodel.cn/api/paas/v4/chat/completions`
