@@ -11,8 +11,13 @@ public final class SendPreviewFormatter {
         MaskedReviewPayload payload = MaskedReviewPayload.from(context);
         StringBuilder outbound = new StringBuilder();
         if (!payload.projectRules().isBlank()) {
-            outbound.append("--- 项目学习约定（.codementor/rules.md）---\n")
+            outbound.append("--- 项目学习约定与本次学习目标或问题（.codementor/rules.md / 本次输入）---\n")
                     .append(payload.projectRules())
+                    .append("\n\n");
+        }
+        if (!payload.projectKnowledge().isBlank()) {
+            outbound.append("--- 项目画像摘要（本机扫描得到的声明级信息，不含方法体）---\n")
+                    .append(payload.projectKnowledge())
                     .append("\n\n");
         }
         outbound.append("--- 代码上下文 ---\n")

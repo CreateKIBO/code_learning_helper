@@ -4,6 +4,10 @@
 
 本文档描述当前代码，而不是开发路线图。CodeMentor 是 IntelliJ IDEA 2024.1.x 内的个人 Java / JavaWeb 学习插件，核心闭环是“发现问题 → 自己修改 → 再次验证 → 复习练习”。
 
+本次未发布改进（2026-11-15）：`NextStepAction` 复用 `AbstractMentorAction` 和 `ReviewCoordinator`，以 `ReviewMode.NEXT_STEP` 发起编码指导。用户输入的可选目标最多 1,000 字符，只追加到当前内存上下文的规则数据块中，沿用脱敏、预览、授权、取消与缓存键；不写回 `.codementor/rules.md`。解析器要求恰好一个中性任务且 `example` 为空，证据依旧必须来自目标源码；指导模式不记录评审错误事件、不提供修改验证。
+
+PSI 采集增加当前类最多 8 个方法签名（每个最多 300 字符）。单方法内的选区还携带选区前最多 2,000 字符与选区后最多 1,000 字符的背景；前文过长时保留开头与紧邻选区的片段，显式标记中段省略。跨方法选区不关联单个所在方法。背景优先于 imports 进入预算，但整体仍受 16,000 字符限制，目标优先保留；不读取其他方法体或跨文件依赖。辅助背景不能单独作为 evidence，也不会让选区获得完整方法的验证锚点。
+
 ## 1. 架构边界与不变量
 
 CodeMentor 刻意不做自动改代码、项目命令执行、完整工程生成、服务端账号和云端学习历史。由此得到以下不变量：
@@ -17,6 +21,7 @@ CodeMentor 刻意不做自动改代码、项目命令执行、完整工程生成
 7. PSI、网络、PasswordSafe 和磁盘 I/O 不在 EDT 上执行；UI 状态只在 EDT 更新。
 8. 模型建议中的代码证据必须同时存在于实际发送的脱敏上下文和脱敏目标源码；修改验证证据必须来自当前目标源码。无法核对的整次结构化结果不会进入会话、缓存或历史。
 9. 追问问题与回答只属于当前内存会话，不写入学习历史或 Markdown 导出。
+10. 未获得“读取整个项目”的授权时，不扫描项目、不读取已保存的项目画像；画像只含声明、不含方法体，且永远不能充当建议证据（见第 11 节）。
 
 ## 2. 组件与依赖方向
 
@@ -39,6 +44,9 @@ flowchart TD
     P --> L
     L --> M["Tool Window UI"]
     B --> N["有界本地历史<br/>LearningHistoryService / LearningEventStore"]
+    B --> Q["项目画像（需读取授权）<br/>ProjectKnowledgeService / ProjectScanner"]
+    G --> Q
+    Q --> F
 ```
 
 依赖方向保持单向：动作只负责找到编辑器目标并调用协调器；协调器拥有业务流程；模型客户端不直接操作 UI；本地历史不依赖模型响应对象中的代码证据。
@@ -226,13 +234,51 @@ Markdown 导出不会读取或输出历史 `detail`，并转义 HTML、CommonMar
 | API Key | IntelliJ PasswordSafe | 具体后端由操作系统和 IDE 配置决定，不写普通 XML |
 | 项目端点授权 | project `PersistentStateComponent`，禁用 roaming | 项目 workspace 元数据，通常是 `.idea/workspace.xml` |
 | 学习历史 | 有界 JSONL + 单个轮转文件 | IntelliJ system 目录的 `codementor/` |
+| 读取整个项目的决定 | 同一个 project `PersistentStateComponent` | 项目 workspace 元数据，与端点授权并列 |
+| 项目画像 | 每项目一个 JSON，文件名为项目路径摘要 | IntelliJ system 目录的 `codementor/project-profiles/`；撤销读取授权时删除 |
 | 项目学习约定 | 用户维护的 Markdown | 项目根 `.codementor/rules.md` |
 | 评审缓存 | project 内存 LRU（50 项） | 容量淘汰、项目关闭或全局清除学习记录时丢弃；新评审/reset/撤销授权不清缓存 |
 | session、pending request、追问问答和卡片展开状态 | project 内存 | 新评审或 reset 清空当前交互状态；项目关闭后丢弃 |
 
 卸载插件不会自动删除 PasswordSafe、设置、workspace 授权或学习历史。优先使用 UI 清理，手工路径只作为 UI 不可用时的兜底，详见 `PRIVACY.md`。
 
-## 11. 测试边界
+## 11. 项目画像与老师式讲解（未发布）
+
+### 不变量
+
+- 没有 `ProjectScanDecision.GRANTED` 就不扫描、不读取已保存的画像；`ProjectKnowledgeService.profileForRequest()` 返回空画像，提示词与引入画像之前逐字一致。
+- 读取授权与发送授权相互独立：前者只管本机扫描和记忆，画像摘要能否发出仍由端点授权、发送预览和 `OutboundRequestGuard` 决定。
+- 画像摘要保存在 `ReviewContext.projectKnowledge`，与 `modelContext` 分开：它进入 `MaskedReviewPayload`、发送预览和缓存键，但不参与 `EvidenceGroundingValidator` 的证据来源，因此永远不能充当 evidence。
+- 画像只有声明：`ClassFacts` 在构造时去掉控制字符并截断每个名字，方法体、注释和字符串从不进入内存模型、本机文件或提示词。摘要里不出现文件路径。
+
+### 组件
+
+| 组件 | 是否依赖 IDE | 职责 |
+|------|--------------|------|
+| `ClassFacts` / `ProjectProfile` | 否 | 不可变的声明事实与按简单名的索引，带数量上限 |
+| `ProjectConventions` | 否 | 基于计数归纳分层规模和常见写法，不做好坏评价 |
+| `ProjectKnowledgeFormatter` | 否 | 生成 3,000 字符内的请求摘要和 8,000 字符内的用户概览；按标识符文本匹配相关类，同名时依次优先已 import、同包、非测试 |
+| `ProjectProfileCodec` / `ProjectProfileStore` | 否 | 显式 JSON 编解码与原子写入；版本不符、过大或损坏时返回空并触发重扫 |
+| `ProjectScanner` | 是 | 在读锁内遍历项目内容根的 `.java` 文件，读取 PSI 前后各应用一次排除规则和项目边界 |
+| `ProjectKnowledgeService` | 是 | 授权、扫描调度、内存与磁盘记忆、过期刷新、遗忘 |
+| `ProjectKnowledgeDialogs` | 是 | 授权询问、管理入口和只读概览 |
+
+### 请求流中的位置
+
+`ReviewCoordinator` 在手动触发时先调用 `ProjectKnowledgeDialogs.askOnce`（保存触发从不弹窗；用户关闭对话框而不作选择时，本次 IDE 会话不再主动询问），然后把“读取规则文件”和“取得画像”合并成一个 `Preparation` Future，沿用原有的 generation 与取消逻辑。任一失败都退回空值，请求照常进行。PSI 采集完成后，在同一个非阻塞读操作里用 `ProjectKnowledgeFormatter.format` 生成摘要并附到上下文。追问复用原上下文里的同一份摘要，不产生新的出站内容。
+
+### 线程与刷新
+
+扫描使用 `ReadAction.nonBlocking(...).inSmartMode(project).expireWith(service).finishOnUiThread(ModalityState.any(), ...)`：等索引就绪才开始，可被写操作打断后重跑，结果在 EDT 落地后再交给单 worker 的有界执行器写盘。已有画像时请求立即使用旧画像；PSI 修改计数变化且距上次扫描超过 30 秒时在后台刷新。只有首次扫描会让请求最多等待 8 秒，超时则本次不带画像。扫描期间撤销授权，迟到的结果会被丢弃，不会复活画像。
+
+### 讲解协议
+
+- 解释模式的 `walkthrough` 和编码指导模式的 `roadmap` 解析为结果级的 `GuideStep` 列表；`Suggestion` 新增可选的 `rationale`、`alternatives`、`pitfall`。
+- 这些都是增强字段：缺失、类型不对、超长或声称执行过代码时降级为空或丢弃单步，不让整次响应失败。
+- `EvidenceGroundingValidator.keepGroundedSteps` 丢弃代码片段无法在目标源码中定位的讲解步骤；`EvidenceLocator` 用同样的“忽略空白”方式把片段映射回编辑器偏移，定位只移动光标、不改选区。
+- 评审类请求的输出上限单独放宽到 4,000 token，避免新增字段把 JSON 截断，同时不超过旧模型 4K 的输出上限。
+
+## 12. 测试边界
 
 测试默认离线，不请求真实模型：
 
@@ -244,6 +290,7 @@ Markdown 导出不会读取或输出历史 `detail`，并转义 HTML、CommonMar
 - 证据来源测试覆盖目标源码/元数据隔离、当前验证代码、原文匹配、空白规范化、包裹引号和无法定位证据的拒绝；
 - session、缓存和去重测试覆盖迟到响应、展开/追问/练习状态、完整配置键、原学习身份和容量；
 - PSI 与验证身份测试覆盖重载、签名变化、不同方法和选区拒绝；
+- 项目画像测试（纯单元测试）覆盖写法归纳、摘要长度预算、同名类消歧、控制字符清理、JSON 往返与损坏文件、本机存储的文件名摘要和删除；讲解协议测试覆盖逐段讲解/整体思路解析、增强字段降级、讲解步骤的证据过滤、项目画像数据块的隔离与转义、预览脱敏和缓存隔离；代码定位测试覆盖空白差异、优先范围和越界输入。`ProjectScanner`、`ProjectKnowledgeService` 和授权对话框依赖 IDE，目前没有夹具测试；
 - 历史测试覆盖流式尾读、轮转、损坏输入、路径最小化、导出转义、置信度过滤、同次评审去重、知识点归一化和异步清理；
 - `ModelHttpTransportTest` 启动 JDK 本机临时 HTTP 服务，验证 Bearer 头、UTF-8 JSON、结构化输出声明、响应上限、有界错误信息和 reasoning-only 空最终答案分类；`ZhiPuModelClientReviewTest` 进一步走真实 worker → HTTP → 协议重试 → 解析 → callback 链路，验证首个空 content 后第二次能够成功返回导师结果。
 

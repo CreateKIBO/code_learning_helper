@@ -95,6 +95,18 @@ class ReviewCacheAndDeduplicationTest {
         cache.put(review, config, result);
 
         assertTrue(cache.get(explanation, config).isEmpty());
+        assertTrue(cache.get(review.withReviewMode(ReviewMode.NEXT_STEP), config).isEmpty());
+    }
+
+    @Test
+    void nextStepCacheSeparatesDifferentLearningGoals() {
+        ReviewCache cache = new ReviewCache(2);
+        ReviewContext nextStep = context("same", "本次学习目标：处理空输入")
+                .withReviewMode(ReviewMode.NEXT_STEP);
+        ModelRequestConfig config = config("https://a.example/chat");
+        cache.put(nextStep, config, reviewResult("下一步", "S1", "边界", "处理空输入"));
+        assertTrue(cache.get(nextStep, config).isPresent());
+        assertTrue(cache.get(nextStep.withProjectRules("本次学习目标：完善正常返回"), config).isEmpty());
     }
 
     @Test

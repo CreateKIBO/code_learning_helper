@@ -13,6 +13,7 @@ import java.util.List;
  *   <li>{@link #code}：实际要评审的代码文本。</li>
  *   <li>{@link #modelContext}：经过长度限制的包、导入、类型摘要和目标代码。</li>
  *   <li>{@link #javaWebContext} 与 {@link #projectRules}：专项教学上下文。</li>
+ *   <li>{@link #projectKnowledge}：授权后才有的项目画像摘要（项目写法与相关类签名）。</li>
  * </ul>
  *
  * <p>关键设计：携带 {@link #documentStamp} 和 {@link #fingerprint}（代码指纹）。
@@ -63,6 +64,11 @@ public final class ReviewContext {
     private final List<String> technologyTags;
     /** 当前目标范围内 IDEA 已产生的错误/警告摘要。 */
     private final List<String> diagnostics;
+    /**
+     * 项目画像摘要：仅在用户授权读取整个项目后才非空。与 {@link #modelContext} 分开保存，
+     * 因此它永远不能充当建议的 evidence，也有自己独立的长度上限。
+     */
+    private final String projectKnowledge;
 
     public ReviewContext(String filePath, String targetName, String code,
                          String modelContext, boolean truncated,
@@ -111,7 +117,7 @@ public final class ReviewContext {
         this(filePath, targetName, code, modelContext, truncated,
                 documentStamp, fingerprint, methodStart, methodEnd,
                 javaWebContext, projectRules, reviewMode,
-                technologyTags, diagnostics, insideProject, targetName);
+                technologyTags, diagnostics, insideProject, targetName, "");
     }
 
     private ReviewContext(String filePath, String targetName, String code,
@@ -123,7 +129,8 @@ public final class ReviewContext {
                           List<String> technologyTags,
                           List<String> diagnostics,
                           boolean insideProject,
-                          String targetIdentity) {
+                          String targetIdentity,
+                          String projectKnowledge) {
         this.filePath = filePath;
         this.insideProject = insideProject;
         this.targetName = targetName;
@@ -144,6 +151,7 @@ public final class ReviewContext {
                 ? List.of()
                 : List.copyOf(technologyTags);
         this.diagnostics = diagnostics == null ? List.of() : List.copyOf(diagnostics);
+        this.projectKnowledge = projectKnowledge == null ? "" : projectKnowledge;
     }
 
     public ReviewContext withProjectRules(String rules) {
@@ -151,7 +159,7 @@ public final class ReviewContext {
                 filePath, targetName, code, modelContext, truncated,
                 documentStamp, fingerprint, methodStart, methodEnd,
                 javaWebContext, rules, reviewMode, technologyTags, diagnostics,
-                insideProject, targetIdentity);
+                insideProject, targetIdentity, projectKnowledge);
     }
 
     public ReviewContext withReviewMode(ReviewMode mode) {
@@ -159,7 +167,7 @@ public final class ReviewContext {
                 filePath, targetName, code, modelContext, truncated,
                 documentStamp, fingerprint, methodStart, methodEnd,
                 javaWebContext, projectRules, mode, technologyTags, diagnostics,
-                insideProject, targetIdentity);
+                insideProject, targetIdentity, projectKnowledge);
     }
 
     public ReviewContext withTargetIdentity(String identity) {
@@ -167,7 +175,16 @@ public final class ReviewContext {
                 filePath, targetName, code, modelContext, truncated,
                 documentStamp, fingerprint, methodStart, methodEnd,
                 javaWebContext, projectRules, reviewMode, technologyTags, diagnostics,
-                insideProject, identity);
+                insideProject, identity, projectKnowledge);
+    }
+
+    /** 附加项目画像摘要；空串表示本次请求不带画像（未授权、无画像或扫描未完成）。 */
+    public ReviewContext withProjectKnowledge(String knowledge) {
+        return new ReviewContext(
+                filePath, targetName, code, modelContext, truncated,
+                documentStamp, fingerprint, methodStart, methodEnd,
+                javaWebContext, projectRules, reviewMode, technologyTags, diagnostics,
+                insideProject, targetIdentity, knowledge);
     }
 
     public String getFilePath() { return filePath; }
@@ -186,6 +203,8 @@ public final class ReviewContext {
     public ReviewMode getReviewMode() { return reviewMode; }
     public List<String> getTechnologyTags() { return technologyTags; }
     public List<String> getDiagnostics() { return diagnostics; }
+    public String getProjectKnowledge() { return projectKnowledge; }
+    public boolean hasProjectKnowledge() { return !projectKnowledge.isBlank(); }
 
     private static String boundedCode(String value) {
         if (value == null) return "";

@@ -54,11 +54,14 @@ public class FakeReviewService implements ReviewService {
                     return;
                 }
                 boolean explaining = context.getReviewMode() == ReviewMode.EXPLAIN;
+                boolean nextStep = context.getReviewMode() == ReviewMode.NEXT_STEP;
                 callback.onSuccess(new ReviewResult(
-                        explaining
+                        nextStep ? "演示模式：先明确当前方法的输入输出，再选择一个分支实现。"
+                                : explaining
                                 ? "这段代码可以沿着输入、关键调用和输出建立执行流程。"
                                 : "优先关注输入边界、分层职责和方法职责这三个学习点。",
-                        explaining
+                        nextStep ? List.of(buildFakeNextStep(context))
+                                : explaining
                                 ? buildFakeExplanations(context)
                                 : buildFakeSuggestions(context)));
             } catch (Exception e) {
@@ -247,5 +250,22 @@ public class FakeReviewService implements ReviewService {
                         .nextStep("从一次请求进入当前类的位置开始，继续追踪它调用的下一层。")
                         .selfCheckQuestion("当前类型应该知道哪些信息，又不应该知道哪些实现细节？")
                         .build());
+    }
+
+    private Suggestion buildFakeNextStep(ReviewContext context) {
+        return new Suggestion.Builder()
+                .id("S1")
+                .category(Suggestion.Category.JAVA_USAGE)
+                .certainty(Suggestion.Certainty.MEDIUM)
+                .title("明确当前方法的输入输出")
+                .evidence(context.getCode().substring(0, Math.min(120, context.getCode().length())))
+                .hint("调用者会传入什么，并期望得到什么？")
+                .explanation("这是演示任务；接入真实模型后将结合本次学习目标给出具体指导。")
+                .example("")
+                .knowledgePoint("方法契约")
+                .verificationCriteria("能各举一个正常输入和边界输入，说明预期结果")
+                .nextStep("先用一句注释写出当前方法的预期输入与输出。")
+                .selfCheckQuestion("没有输入或传入空值时，你期望怎样处理？")
+                .build();
     }
 }

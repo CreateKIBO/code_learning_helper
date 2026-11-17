@@ -14,7 +14,10 @@
         <h3>CodeMentor：IntelliJ IDEA 内的 Java 学习教练</h3>
         <p>住在 IntelliJ IDEA 里的 Java 学习教练。</p>
         <p>选中代码或把光标放在方法内：Alt+M 评审写法，Alt+Shift+M 解释代码。</p>
+        <p>右键“请导师指导下一步”或在侧栏选择“下一步怎么写”，填写可选学习目标，获取一个最小编码任务和自测标准。</p>
         <p>建议遵循“代码证据 → 思考提示 → 最小下一步 → 自测”的学习路径；支持按需讲解、追问，以及完整方法评审后的修改验证。</p>
+        <p>解释代码时给出逐段讲解，并说明“为什么这样写、换一种写法会怎样、常见误区”；也可以右键“带着问题问导师”直接提问。</p>
+        <p>经你明确同意后，导师可读取当前项目的全部 Java 源码，在本机记住项目的分层、类与方法签名和常见写法（项目画像），讲解时结合项目自己的写法；可随时撤销并删除。</p>
         <p>支持 JavaWeb 分层识别、发送前隐私预览、本地学习统计，以及提示逐条揭示的薄弱知识点小练习。</p>
         <p>代码上下文只会在用户主动操作或明确开启保存触发后发送到用户配置的模型服务。</p>
         <p><a href="https://github.com/CreateKIBO/code_learning_helper/blob/main/PRIVACY.md">隐私说明</a> ·
@@ -46,6 +49,12 @@
 
     <!-- ============ 动作注册 ============ -->
     <actions>
+        <action id="CodeMentor.NextStep"
+                class="com.codementor.action.NextStepAction"
+                text="请导师指导下一步"
+                description="结合当前方法或选中代码，给出一个最小编码任务和自测标准">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
         <action id="CodeMentor.ReviewCurrent"
                 class="com.codementor.action.ReviewAction"
                 text="请导师评审(_M)"
@@ -60,6 +69,12 @@
                 text="请导师解释(_E)"
                 description="解释选中的代码或当前方法">
             <keyboard-shortcut keymap="$default" first-keystroke="alt shift M"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+        <action id="CodeMentor.AskMentor"
+                class="com.codementor.action.AskAction"
+                text="带着问题问导师…"
+                description="针对选中的代码或当前方法向导师提一个具体问题">
             <add-to-group group-id="EditorPopupMenu" anchor="last"/>
         </action>
     </actions>

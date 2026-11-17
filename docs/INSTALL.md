@@ -88,6 +88,7 @@ chmod +x ./gradlew
 先完全关闭 IntelliJ IDEA，并备份需要保留的文件：
 
 - 学习历史：删除 IntelliJ system 目录下 `codementor/learning-events.jsonl`、`learning-events.jsonl.1` 和 `learning-events.jsonl.rotation.tmp`。
+- 项目画像（仅在授权读取整个项目后存在）：删除 IntelliJ system 目录下的 `codementor/project-profiles/` 目录。
 - 应用设置：删除 IntelliJ config 目录下的 `options/codeMentor.xml`。
 - 项目授权：只从项目 workspace 元数据中移除 `CodeMentorProjectConsent` 组件。不要直接删除整个 `.idea/workspace.xml`，其中还包含其他 IDE 状态。
 - API Key：在 IDE 实际使用的 PasswordSafe 后端中查找服务名 `CodeMentor`、用户名 `apiKey`。具体后端与管理方式取决于操作系统和 IDE 配置。

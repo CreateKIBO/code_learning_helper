@@ -1,9 +1,12 @@
 package com.codementor.model;
 
+import com.codementor.review.GuideStep;
 import com.codementor.review.ReviewResult;
 import com.codementor.review.Suggestion;
 import com.codementor.review.VerificationResult;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.regex.Pattern;
 
 /** Rejects model suggestions whose claimed evidence cannot be found in the sent context. */
@@ -12,6 +15,8 @@ final class EvidenceGroundingValidator {
     /** 证据长度的合法区间；PromptBuilder 用同一常量生成提示词，避免校验与提示脱节。 */
     static final int MIN_NORMALIZED_EVIDENCE_CHARS = 8;
     static final int MAX_NORMALIZED_EVIDENCE_CHARS = 160;
+    /** 逐段讲解的代码片段允许比建议证据更短（如 {@code i++}），但不能短到没有定位意义。 */
+    static final int MIN_NORMALIZED_STEP_CODE_CHARS = 3;
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     private EvidenceGroundingValidator() {}
@@ -36,6 +41,34 @@ final class EvidenceGroundingValidator {
                     suggestion.getEvidence(), sentModelContext, allowedSourceCode);
         }
         return result;
+    }
+
+    /**
+     * 过滤逐段讲解：代码片段必须是目标源码里空白等价的连续原文，否则丢弃这一步。
+     * 讲解步骤是增强内容，不合格只丢弃单步，不让整次结果失败；没有代码片段的步骤
+     * （下一步指导里的整体思路）原样保留。
+     */
+    static ReviewResult keepGroundedSteps(
+            ReviewResult result,
+            String sentModelContext,
+            String allowedSourceCode) {
+        if (result.steps().isEmpty()) return result;
+        String context = normalize(sentModelContext);
+        String source = normalize(allowedSourceCode);
+        List<GuideStep> kept = new ArrayList<>();
+        for (GuideStep step : result.steps()) {
+            if (!step.hasCode()) {
+                kept.add(step);
+                continue;
+            }
+            String code = normalize(stripWrappingQuotes(step.code()));
+            if (code.length() >= MIN_NORMALIZED_STEP_CODE_CHARS
+                    && context.contains(code)
+                    && source.contains(code)) {
+                kept.add(step);
+            }
+        }
+        return kept.size() == result.steps().size() ? result : result.withSteps(kept);
     }
 
     static VerificationResult requireGrounded(
