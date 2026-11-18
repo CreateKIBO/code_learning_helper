@@ -2,15 +2,56 @@ package com.codementor.review;
 
 import com.codementor.context.ContextTarget;
 import com.codementor.context.PsiContextExtractor;
+import com.codementor.project.ProjectCalls;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.command.WriteCommandAction;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
 import com.intellij.openapi.util.Computable;
 import com.intellij.psi.PsiDocumentManager;
 import com.intellij.testFramework.PlatformTestUtil;
 import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase;
 
+import java.util.List;
+
 /** Verifies that expiry is conservative while the live method anchor remains usable. */
 public class ExpiryWatcherTest extends LightJavaCodeInsightFixtureTestCase {
+
+    public void testEditingTrackedDeclarationExpiresResultAndPendingFollowUp() {
+        var dependency = myFixture.addFileToProject("Store.java", "class Store { int load() { return 1; } }")
+                .getVirtualFile();
+        var other = myFixture.addFileToProject("Other.java", "class Other {} ").getVirtualFile();
+        var target = myFixture.configureByText("Demo.java", "class Demo { void run() { <caret> } }");
+        var editor = myFixture.getEditor();
+        var context = readContext(target, ContextTarget.capture(editor, null));
+        assertNotNull(context);
+        var manager = FileDocumentManager.getInstance();
+        var dependencyDocument = manager.getDocument(dependency);
+        var otherDocument = manager.getDocument(other);
+        assertNotNull(dependencyDocument);
+        assertNotNull(otherDocument);
+        var calls = new ProjectCalls(List.of("int Store#load()"), List.of(new ProjectCalls.SourceVersion(
+                dependency, dependency.getUrl(), dependency.getModificationStamp(),
+                dependencyDocument.getModificationStamp())));
+        var session = new ReviewSession();
+        session.startRequest(context, "review-id");
+        session.succeed("review-id", List.of());
+        session.startFollowUp("S1", "follow-up", "What happens here?");
+        var watcher = new ExpiryWatcher(editor.getDocument(), context, session, "review-id");
+        watcher.attach();
+        watcher.watchProjectCalls(calls);
+        try {
+            WriteCommandAction.runWriteCommandAction(getProject(), () -> otherDocument.insertString(0, "// edit\n"));
+            PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue();
+            assertEquals(ReviewStatus.SUCCESS, session.getStatus());
+            WriteCommandAction.runWriteCommandAction(getProject(), () -> dependencyDocument.insertString(0, "// edit\n"));
+            PlatformTestUtil.dispatchAllInvocationEventsInIdeEventQueue();
+            assertEquals(ReviewStatus.EXPIRED, session.getStatus());
+            assertFalse(session.completeFollowUp("S1", "follow-up", "stale answer"));
+            assertEquals(FollowUpResult.Status.IDLE, session.getFollowUpResult("S1").getStatus());
+        } finally {
+            watcher.detach();
+        }
+    }
 
     public void testAnchorFollowsEditsBeforeOriginalMethod() {
         var psiFile = myFixture.configureByText(

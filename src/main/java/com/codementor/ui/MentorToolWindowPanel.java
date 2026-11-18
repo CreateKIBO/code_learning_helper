@@ -767,15 +767,14 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                 JBUI.Borders.empty(10, 12)));
 
         JBLabel title = new JBLabel(
-                "代码已修改，当前结果可能过期",
+                "目标代码或相关文件已更新",
                 AllIcons.General.Warning,
                 SwingConstants.LEFT);
         title.setFont(title.getFont().deriveFont(Font.BOLD, 13f));
         title.setForeground(COLOR_EXPIRY_TITLE);
 
         JBLabel desc = new JBLabel(
-                "<html>分析过的代码已经变化，旧内容可能对不上当前位置。"
-                        + "<br>点击上方按钮重新获取最新结果。</html>");
+                "<html>点击上方按钮，用当前代码重新获取结果。</html>");
         desc.setForeground(JBColor.GRAY);
         desc.setFont(desc.getFont().deriveFont(11f));
 
@@ -1037,7 +1036,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                 return mode == ReviewMode.NEXT_STEP ? "编码指导完成"
                         : mode == ReviewMode.EXPLAIN ? "解释完成" : "评审完成";
             case FAILED: return "失败";
-            case EXPIRED: return "已过期（代码已修改）";
+            case EXPIRED: return "已过期";
             default: return s.toString();
         }
     }

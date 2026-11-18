@@ -5,6 +5,7 @@ import com.codementor.review.FeedbackType;
 import com.codementor.review.FollowUpCoordinator;
 import com.codementor.review.FollowUpResult;
 import com.codementor.review.ReviewMode;
+import com.codementor.review.ReviewStatus;
 import com.codementor.review.ReviewSession;
 import com.codementor.review.Suggestion;
 import com.codementor.review.VerificationCoordinator;
@@ -200,6 +201,7 @@ final class SuggestionCardPanel extends JBPanel<SuggestionCardPanel> {
         }
 
         JButton followUpButton = new JButton("继续追问…");
+        followUpButton.setEnabled(session.getStatus() != ReviewStatus.EXPIRED);
         FollowUpResult followUp = session.getFollowUpResult(suggestion.getId());
         if (followUp.getStatus() == FollowUpResult.Status.REQUESTING) {
             followUpButton.setText("取消追问");

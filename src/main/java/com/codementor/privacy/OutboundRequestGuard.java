@@ -47,6 +47,10 @@ public final class OutboundRequestGuard {
         if (context == null) {
             return Decision.permit();
         }
+        if (context.hasProjectKnowledge()
+                && !CodeMentorProjectConsent.getInstance(project).isProjectScanGranted()) {
+            return Decision.deny("项目读取授权已撤销，请重新发起本次操作");
+        }
         if (!context.isInsideProject()) {
             return Decision.deny("项目目录外的文件不会发送给模型");
         }

@@ -1,6 +1,7 @@
 package com.codementor.project;
 
 import com.codementor.javaweb.JavaWebRole;
+import com.codementor.privacy.FileExclusionPolicy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -16,6 +17,22 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProjectKnowledgeTest {
+
+    @Test
+    void filtersCachedDeclarationsAndPrioritizesResolvedCalls() {
+        var profile = shopProfile().filtered(new FileExclusionPolicy("*UserService*.java"));
+        assertTrue(profile.findBySimpleName("UserService").isEmpty());
+        assertTrue(profile.findBySimpleName("UserServiceImpl").isEmpty());
+
+        String signature = "void com.demo.shop.OrderService#register(OrderDto)";
+        String knowledge = ProjectKnowledgeFormatter.format(profile,
+                focus("src/Demo.java", JavaWebRole.UNKNOWN, "UserService", "UserService"),
+                List.of(signature));
+        assertTrue(knowledge.startsWith("【目标代码中已解析的项目方法调用】"), knowledge);
+        assertTrue(knowledge.contains(signature), knowledge);
+        assertFalse(knowledge.contains("UserService"), knowledge);
+        assertTrue(knowledge.length() <= ProjectKnowledgeFormatter.MAX_KNOWLEDGE_CHARS);
+    }
 
     @Test
     void summarizesHowTheProjectUsuallyWritesCode() {
@@ -120,6 +137,11 @@ class ProjectKnowledgeTest {
 
         assertTrue(knowledge.contains("fromB"), knowledge);
         assertFalse(knowledge.contains("fromA"), knowledge);
+
+        String ambiguous = ProjectKnowledgeFormatter.format(profile, focus(
+                "src/X.java", JavaWebRole.UNKNOWN, "return Result.ok();", ""));
+        assertFalse(ambiguous.contains("fromA"), ambiguous);
+        assertFalse(ambiguous.contains("fromB"), ambiguous);
     }
 
     @Test

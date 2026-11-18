@@ -1,5 +1,7 @@
 package com.codementor.project;
 
+import com.codementor.privacy.FileExclusionPolicy;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -54,6 +56,14 @@ public final class ProjectProfile {
 
     public boolean isEmpty() {
         return classes.isEmpty();
+    }
+
+    public ProjectProfile filtered(FileExclusionPolicy policy) {
+        List<ClassFacts> allowed = classes.stream()
+                .filter(facts -> !policy.evaluate(facts.relativePath()).excluded())
+                .toList();
+        return allowed.size() == classes.size() ? this
+                : new ProjectProfile(allowed, scannedFiles, skippedFiles, truncated, scannedAtEpochMillis);
     }
 
     public List<ClassFacts> classes() {

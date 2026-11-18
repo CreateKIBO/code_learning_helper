@@ -58,9 +58,17 @@ public final class ProjectKnowledgeFormatter {
 
     /** 生成随请求发送的画像摘要；画像为空时返回空串（等同于未开启项目画像）。 */
     public static String format(ProjectProfile profile, Focus focus) {
-        if (profile == null || profile.isEmpty() || focus == null) return "";
-        ClassFacts current = currentClass(profile, focus.filePath());
+        return format(profile, focus, List.of());
+    }
+
+    public static String format(ProjectProfile profile, Focus focus, List<String> resolvedCalls) {
         Bounded out = new Bounded(MAX_KNOWLEDGE_CHARS);
+        if (!resolvedCalls.isEmpty()) {
+            out.line("【目标代码中已解析的项目方法调用】声明签名，含类的完整名称，不含实现");
+            for (String signature : resolvedCalls) out.line("- " + signature);
+        }
+        if (profile == null || profile.isEmpty() || focus == null) return out.toString();
+        ClassFacts current = currentClass(profile, focus.filePath());
         out.line("【项目画像】本机扫描 " + profile.scannedFiles()
                 + " 个 Java 文件得到的声明级摘要（只有类名、注解、字段类型和方法签名，不含方法体）");
         appendConventions(out, ProjectConventions.analyze(profile));
@@ -239,7 +247,7 @@ public final class ProjectKnowledgeFormatter {
         }
     }
 
-    /** 同名类有多个时：优先已 import 的，其次同包的，再其次非测试代码里的。 */
+    /** 同名类优先匹配显式 import 或同包类；画像无法消歧时省略。 */
     private static ClassFacts resolve(
             ProjectProfile profile, String simpleName, Focus focus, ClassFacts current) {
         List<ClassFacts> candidates = profile.findBySimpleName(simpleName);
@@ -255,10 +263,7 @@ public final class ProjectKnowledgeFormatter {
                 if (candidate.packageName().equals(current.packageName())) return candidate;
             }
         }
-        for (ClassFacts candidate : candidates) {
-            if (!candidate.testSource()) return candidate;
-        }
-        return candidates.get(0);
+        return null;
     }
 
     private static List<String> peers(

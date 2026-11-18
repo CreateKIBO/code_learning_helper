@@ -149,6 +149,8 @@ public final class ReviewSession {
         if (status == ReviewStatus.REQUESTING || status == ReviewStatus.SUCCESS) {
             this.status = ReviewStatus.EXPIRED;
             this.requestId = null; // 作废请求：随后迟到的成功/失败响应一并丢弃
+            followUpResults.keySet().removeAll(followUpRequestIds.keySet());
+            followUpRequestIds.clear();
             fireChanged();
         }
     }

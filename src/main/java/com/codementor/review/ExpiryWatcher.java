@@ -1,13 +1,23 @@
 package com.codementor.review;
 
 import com.codementor.context.ContextTarget;
+import com.codementor.project.ProjectCalls;
+import com.intellij.openapi.Disposable;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
+import com.intellij.openapi.editor.EditorFactory;
 import com.intellij.openapi.editor.RangeMarker;
 import com.intellij.openapi.editor.event.DocumentEvent;
 import com.intellij.openapi.editor.event.DocumentListener;
+import com.intellij.openapi.fileEditor.FileDocumentManager;
+import com.intellij.openapi.util.Disposer;
+import com.intellij.openapi.vfs.VirtualFileManager;
+import com.intellij.openapi.vfs.newvfs.BulkFileListener;
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent;
 import org.jetbrains.annotations.NotNull;
+
+import java.util.List;
 
 /**
  * 过期检测器 —— 自动检测评审期间的代码是否被用户修改（方案第 2、8 节核心安全机制）。
@@ -44,6 +54,8 @@ public class ExpiryWatcher implements DocumentListener {
     private RangeMarker methodRange;
     private boolean armed = true; // 首次编辑只触发一次评审过期，后续编辑只失效验证结论
     private boolean listening;
+    private ProjectCalls projectCalls = ProjectCalls.EMPTY;
+    private Disposable projectCallListeners;
 
     public ExpiryWatcher(Document document, ReviewContext context,
                          ReviewSession session, String requestId) {
@@ -78,6 +90,7 @@ public class ExpiryWatcher implements DocumentListener {
     /** 卸载，停止监听（评审重置或新评审开始时调用）。可重复调用。 */
     public void detach() {
         armed = false;
+        stopWatchingProjectCalls();
         stopListening();
         if (methodRange != null) {
             methodRange.dispose();
@@ -93,13 +106,55 @@ public class ExpiryWatcher implements DocumentListener {
             session.invalidateCompletedVerifications();
             return;
         }
-        armed = false; // 一次性：触发后不再响应，直到下次评审重新挂载
+        expire();
+    }
+
+    void watchProjectCalls(ProjectCalls calls) {
+        if (calls.sources().isEmpty()) return;
+        projectCalls = calls;
+        projectCallListeners = Disposer.newDisposable("CodeMentor project call listeners");
+        EditorFactory.getInstance().getEventMulticaster().addDocumentListener(new DocumentListener() {
+            @Override
+            public void beforeDocumentChange(@NotNull DocumentEvent event) {
+                if (calls.contains(FileDocumentManager.getInstance().getFile(event.getDocument()))) {
+                    expire();
+                }
+            }
+        }, projectCallListeners);
+        ApplicationManager.getApplication().getMessageBus().connect(projectCallListeners)
+                .subscribe(VirtualFileManager.VFS_CHANGES, new BulkFileListener() {
+                    @Override
+                    public void after(@NotNull List<? extends VFileEvent> events) {
+                        if (!calls.isCurrent()) {
+                            ApplicationManager.getApplication().invokeLater(() -> expire());
+                        }
+                    }
+                });
+    }
+
+    boolean checkProjectCalls() {
+        if (projectCalls.isCurrent()) return true;
+        expire();
+        return false;
+    }
+
+    private void expire() {
+        if (!armed) return;
+        armed = false;
         onExpired.run();
         ApplicationManager.getApplication().invokeLater(() -> {
+            stopWatchingProjectCalls();
             session.expire(requestId);
             // listener 保留到新评审/reset：marker 继续复定位原方法，后续编辑会
             // 失效基于上一文档版本的验证结论。
         });
+    }
+
+    private void stopWatchingProjectCalls() {
+        if (projectCallListeners != null) {
+            Disposer.dispose(projectCallListeners);
+            projectCallListeners = null;
+        }
     }
 
     /** Captures the current location of the exact full-method target on the EDT. */

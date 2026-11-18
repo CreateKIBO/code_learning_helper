@@ -1,6 +1,7 @@
 package com.codementor.project;
 
 import com.codementor.privacy.FileExclusionPolicy;
+import com.codementor.review.ReviewCoordinator;
 import com.codementor.settings.CodeMentorProjectConsent;
 import com.codementor.settings.CodeMentorProjectConsent.ProjectScanDecision;
 import com.codementor.settings.CodeMentorSettings;
@@ -144,7 +145,9 @@ public final class ProjectKnowledgeService implements Disposable {
     /** 当前内存中的画像；未授权时恒为空。 */
     public ProjectProfile currentProfile() {
         if (project.isDisposed()) return ProjectProfile.empty();
-        return consent().isProjectScanGranted() ? profile : ProjectProfile.empty();
+        return consent().isProjectScanGranted()
+                ? profile.filtered(new FileExclusionPolicy(CodeMentorSettings.getInstance().getExcludedFilePatterns()))
+                : ProjectProfile.empty();
     }
 
     /** 用户同意读取整个项目：记录决定并立即开始首次扫描。 */
@@ -156,8 +159,10 @@ public final class ProjectKnowledgeService implements Disposable {
 
     /** 用户拒绝或撤销：记录决定，清空内存画像并删除本机文件。 */
     public void deny() {
+        boolean wasGranted = consent().isProjectScanGranted();
         consent().setProjectScanDecision(ProjectScanDecision.DENIED);
         forget();
+        if (wasGranted) ReviewCoordinator.getInstance(project).cancelAll();
     }
 
     /**
@@ -280,10 +285,9 @@ public final class ProjectKnowledgeService implements Disposable {
             long startedModificationCount) {
         ProjectProfile accepted;
         synchronized (lock) {
-            if (runningResult == result) {
-                runningResult = null;
-                runningScan = null;
-            }
+            if (runningResult != result) return;
+            runningResult = null;
+            runningScan = null;
             // 扫描期间授权可能已被撤销；撤销后的结果必须丢弃，不能复活画像。
             if (scanned == null || !consent().isProjectScanGranted()) {
                 accepted = null;

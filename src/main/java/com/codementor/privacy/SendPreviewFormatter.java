@@ -16,7 +16,7 @@ public final class SendPreviewFormatter {
                     .append("\n\n");
         }
         if (!payload.projectKnowledge().isBlank()) {
-            outbound.append("--- 项目画像摘要（本机扫描得到的声明级信息，不含方法体）---\n")
+            outbound.append("--- 项目画像摘要（声明级信息，可含已解析调用签名）---\n")
                     .append(payload.projectKnowledge())
                     .append("\n\n");
         }
