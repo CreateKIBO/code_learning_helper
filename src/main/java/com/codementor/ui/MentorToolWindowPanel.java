@@ -6,6 +6,8 @@ import com.codementor.practice.Exercise;
 import com.codementor.practice.ExerciseCoordinator;
 import com.codementor.practice.ExerciseResult;
 import com.codementor.model.ModelRequestConfig;
+import com.codementor.project.ProjectKnowledgeService;
+import com.codementor.review.GuideStep;
 import com.codementor.review.ReviewSession;
 import com.codementor.review.ReviewCoordinator;
 import com.codementor.review.ReviewMode;
@@ -45,6 +47,8 @@ import javax.accessibility.AccessibleContext;
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -60,7 +64,7 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>IDLE：居中图标 + 引导文案（空状态）</li>
  *   <li>REQUESTING：评审中提示</li>
- *   <li>SUCCESS：建议卡片列表 + 顶部「重新评审」按钮</li>
+ *   <li>SUCCESS：总结 + 逐段讲解/整体思路（如有）+ 建议卡片列表 + 顶部「重新评审」按钮</li>
  *   <li>EXPIRED：橙色醒目横幅 + 「重新评审」按钮</li>
  *   <li>FAILED：红色错误信息 + 「重新评审」按钮</li>
  * </ul>
@@ -70,6 +74,8 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
     /** 重新评审按钮触发的 Action ID（与 plugin.xml 一致）。 */
     private static final String REVIEW_ACTION_ID = "CodeMentor.ReviewCurrent";
     private static final String EXPLAIN_ACTION_ID = "CodeMentor.ExplainCurrent";
+    private static final String NEXT_STEP_ACTION_ID = "CodeMentor.NextStep";
+    private static final String ASK_ACTION_ID = "CodeMentor.AskMentor";
 
     // ---- 配色常量（亮色/暗色双值，跟随 IDE 主题）----
     /** 成功状态文字色（绿）。 */
@@ -86,6 +92,11 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
     private final ReviewSession session;
     private final JBLabel headerLabel = new JBLabel();
     private final JBLabel statusLabel = new JBLabel();
+    /** 项目画像状态：让用户随时知道导师是“只看当前文件”还是“记得整个项目”。 */
+    private final JBLabel knowledgeLabel = new JBLabel();
+    /** 构造时缓存，理由同 {@link #session}。 */
+    private final ProjectKnowledgeService knowledgeService;
+    private final ProjectKnowledgeService.Listener knowledgeListener = this::onKnowledgeChanged;
     private final AsyncProcessIcon activityIndicator =
             new AsyncProcessIcon("CodeMentor background activity");
     private final JButton reReviewButton = new JButton("重新评审");
@@ -95,6 +106,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
     private final JMenuItem summaryItem = new JMenuItem("查看学习统计");
     private final JMenuItem exportItem = new JMenuItem("导出复习清单…");
     private final JMenuItem privacyItem = new JMenuItem("隐私与数据…");
+    private final JMenuItem knowledgeItem = new JMenuItem("项目画像…");
     private final JMenuItem settingsItem = new JMenuItem("打开 CodeMentor 设置…");
     private final JPanel cardsPanel = new JPanel(new BorderLayout());
     private final JPanel contentPanel = new JPanel(new BorderLayout());
@@ -112,11 +124,15 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         super(true);
         this.project = project;
         this.session = ReviewSession.getInstance(project);
+        this.knowledgeService = ProjectKnowledgeService.getInstance(project);
         setupUi();
 
         // 订阅会话变化（回调约定在 EDT，安全更新 UI）
         session.addListener(sessionListener);
+        knowledgeService.addListener(knowledgeListener);
         render();
+        // 已授权时把上次记住的项目画像读回来，并在后台刷新。
+        knowledgeService.warmUp();
     }
 
     /**
@@ -131,6 +147,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         cancel(clearHistoryFuture);
         // 项目关闭时服务容器可能先于本面板销毁；直接用缓存引用退订，不做服务查找。
         session.removeListener(sessionListener);
+        knowledgeService.removeListener(knowledgeListener);
         if (!activityIndicator.isDisposed()) activityIndicator.dispose();
     }
 
@@ -155,8 +172,21 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         summaryItem.addActionListener(e -> showLearningSummary());
         privacyItem.setToolTipText("撤销发送授权或删除本机学习记录");
         privacyItem.addActionListener(e -> showPrivacyAndData());
+        knowledgeItem.setToolTipText("允许或撤销读取整个项目，查看、刷新导师记住的项目画像");
+        knowledgeItem.addActionListener(e -> ProjectKnowledgeDialogs.manage(project));
+        knowledgeLabel.setForeground(JBColor.GRAY);
+        knowledgeLabel.setFont(knowledgeLabel.getFont().deriveFont(11f));
+        // 状态行本身就是入口：点一下即可开启、查看或撤销，不必先去“更多…”里找。
+        knowledgeLabel.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        knowledgeLabel.addMouseListener(new MouseAdapter() {
+            @Override
+            public void mouseClicked(MouseEvent event) {
+                if (disposed || project.isDisposed()) return;
+                ProjectKnowledgeDialogs.manage(project);
+            }
+        });
         settingsItem.addActionListener(e -> openSettings());
-        moreButton.setToolTipText("发送预览、统计、导出、隐私和设置");
+        moreButton.setToolTipText("提问、项目画像、发送预览、统计、导出、隐私和设置");
         moreButton.addActionListener(e -> showMoreMenu());
 
         // 头部依次显示目标、状态和分层动作，适配窄侧栏。
@@ -171,6 +201,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         updateActivityDescription("CodeMentor 当前没有后台任务");
         statusLine.add(activityIndicator, BorderLayout.EAST);
         headerLine.add(statusLine, BorderLayout.CENTER);
+        headerLine.add(knowledgeLabel, BorderLayout.SOUTH);
 
         JPanel topPanel = new JPanel(new BorderLayout());
         topPanel.add(headerLine, BorderLayout.CENTER);
@@ -201,6 +232,20 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         } else {
             SwingUtilities.invokeLater(this::render);
         }
+    }
+
+    /** 项目画像授权或内容变化；可能来自后台线程，只刷新状态行，不重建卡片。 */
+    private void onKnowledgeChanged() {
+        SwingUtilities.invokeLater(() -> {
+            if (disposed || project.isDisposed()) return;
+            refreshKnowledgeLabel();
+        });
+    }
+
+    private void refreshKnowledgeLabel() {
+        if (disposed || project.isDisposed()) return;
+        knowledgeLabel.setText(knowledgeService.statusText());
+        knowledgeLabel.setToolTipText("点击管理读取授权和已记住的项目画像（也可在“更多… → 项目画像…”打开）");
     }
 
     /** 根据当前会话状态重绘整个面板。 */
@@ -234,6 +279,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         statusLabel.setText(
                 "<html><b>状态：</b>" + statusText(status, mode) + "</html>");
         statusLabel.setForeground(statusColor(status));
+        refreshKnowledgeLabel();
         refreshActivityIndicator(session);
 
         // 重新评审按钮：成功 / 过期 / 失败时可见。
@@ -242,11 +288,13 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                 || status == ReviewStatus.FAILED;
         reReviewButton.setVisible(showButton);
         reReviewButton.setText(
-                mode == ReviewMode.EXPLAIN ? "重新解释" : "重新评审");
+                switch (mode) {
+                    case EXPLAIN -> "重新解释";
+                    case NEXT_STEP -> "继续编码指导";
+                    case REVIEW -> "重新评审";
+                });
         reReviewButton.setToolTipText(
-                mode == ReviewMode.EXPLAIN
-                        ? "重新解释当前方法（相当于 Alt+Shift+M）"
-                        : "重新评审当前方法（相当于 Alt+M）");
+                "基于当前编辑器代码重新发起：" + mode.getLabel());
         exerciseButton.setEnabled(
                 session.getExerciseResult().getStatus()
                         != ExerciseResult.Status.GENERATING);
@@ -326,16 +374,27 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         hint2.setAlignmentX(Component.CENTER_ALIGNMENT);
         hint2.setBorder(new EmptyBorder(4, 0, 0, 0));
 
-        JPanel actions = new JPanel(new FlowLayout(FlowLayout.CENTER, 6, 4));
+        JPanel actions = new JPanel(new GridLayout(0, 2, 6, 6));
         actions.setOpaque(false);
         JButton review = new JButton("评审当前代码");
         review.addActionListener(event -> triggerAction(REVIEW_ACTION_ID));
         JButton explain = new JButton("解释当前代码");
         explain.addActionListener(event -> triggerAction(EXPLAIN_ACTION_ID));
+        JButton nextStep = new JButton("下一步怎么写");
+        nextStep.addActionListener(event -> triggerAction(NEXT_STEP_ACTION_ID));
+        JButton ask = new JButton("带着问题问导师…");
+        ask.setToolTipText("针对选中的代码或当前方法提一个具体问题");
+        ask.addActionListener(event -> triggerAction(ASK_ACTION_ID));
+        JButton knowledge = new JButton("项目画像…");
+        knowledge.setToolTipText("允许导师读取整个项目并记住它的结构和写法");
+        knowledge.addActionListener(event -> ProjectKnowledgeDialogs.manage(project));
         JButton settings = new JButton("配置模型…");
         settings.addActionListener(event -> openSettings());
         actions.add(review);
         actions.add(explain);
+        actions.add(nextStep);
+        actions.add(ask);
+        actions.add(knowledge);
         actions.add(settings);
 
         JBLabel shortcuts = new JBLabel("快捷键：Alt+M 评审 · Alt+Shift+M 解释");
@@ -360,7 +419,8 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.setBorder(new EmptyBorder(18, 14, 18, 14));
         JBLabel title = new JBLabel(
-                mode == ReviewMode.EXPLAIN ? "导师正在组织解释…" : "导师正在分析代码…",
+                mode == ReviewMode.NEXT_STEP ? "导师正在规划下一步…"
+                        : mode == ReviewMode.EXPLAIN ? "导师正在组织解释…" : "导师正在分析代码…",
                 AllIcons.General.Information,
                 SwingConstants.LEFT);
         title.setFont(title.getFont().deriveFont(Font.BOLD));
@@ -386,8 +446,13 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         list.setBorder(JBUI.Borders.empty(4, 10, 10, 10));
         ReviewSession session = ReviewSession.getInstance(project);
         boolean explainMode = currentMode(session) == ReviewMode.EXPLAIN;
-        list.add(buildSummaryBanner(session.getSummary(), suggestions.isEmpty(), explainMode));
+        boolean nextStepMode = currentMode(session) == ReviewMode.NEXT_STEP;
+        list.add(buildSummaryBanner(session.getSummary(), suggestions.isEmpty(), currentMode(session)));
         list.add(Box.createVerticalStrut(8));
+        if (!session.getSteps().isEmpty()) {
+            list.add(buildStepsPanel(session.getSteps(), nextStepMode));
+            list.add(Box.createVerticalStrut(8));
+        }
 
         if (suggestions.isEmpty()) {
             JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
@@ -410,7 +475,7 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
             list.add(Box.createVerticalStrut(8));
         }
         JBLabel countLabel = new JBLabel("共 " + suggestions.size()
-                + (explainMode ? " 个理解要点：" : " 条建议："));
+                + (nextStepMode ? " 个编码任务：" : explainMode ? " 个理解要点：" : " 条建议："));
         countLabel.setBorder(JBUI.Borders.empty(0, 0, 6, 0));
         list.add(countLabel);
         for (Suggestion s : suggestions) {
@@ -421,14 +486,14 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
     }
 
     private JComponent buildSummaryBanner(
-            String summary, boolean noSuggestions, boolean explainMode) {
+            String summary, boolean noSuggestions, ReviewMode mode) {
         JPanel panel = new JPanel(new BorderLayout(8, 5));
         panel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(JBColor.border()),
                 JBUI.Borders.empty(10)));
-        String title = noSuggestions && !explainMode
-                ? "未发现需要优先处理的问题"
-                : explainMode ? "整体理解" : "本次学习重点";
+        String title = mode == ReviewMode.NEXT_STEP ? "当前基础与下一步"
+                : noSuggestions && mode == ReviewMode.REVIEW ? "未发现需要优先处理的问题"
+                : mode == ReviewMode.EXPLAIN ? "整体理解" : "本次学习重点";
         JBLabel heading = new JBLabel(
                 title,
                 noSuggestions ? AllIcons.General.InspectionsOK : AllIcons.General.Information,
@@ -449,11 +514,102 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         text.setFocusable(false);
         panel.add(text, BorderLayout.CENTER);
 
-        JBLabel limitation = new JBLabel("基于静态可见上下文；未编译、运行代码或测试。");
+        boolean usedProjectKnowledge = session.getContext() != null
+                && session.getContext().hasProjectKnowledge();
+        JBLabel limitation = new JBLabel(usedProjectKnowledge
+                ? "基于静态可见上下文和本机项目画像；未编译、运行代码或测试。"
+                : "基于静态可见上下文；未编译、运行代码或测试。");
         limitation.setForeground(JBColor.GRAY);
         limitation.setFont(limitation.getFont().deriveFont(11f));
         panel.add(limitation, BorderLayout.SOUTH);
         return panel;
+    }
+
+    /**
+     * 结果级讲解：解释模式是“逐段讲解”（每步带代码原文，可定位到编辑器），
+     * 下一步指导模式是“整体思路”（只有步骤和理由）。
+     */
+    private JComponent buildStepsPanel(List<GuideStep> steps, boolean roadmap) {
+        JPanel panel = new JPanel();
+        panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
+        panel.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border()),
+                JBUI.Borders.empty(10)));
+
+        JBLabel heading = new JBLabel(
+                roadmap ? "整体思路（现在只做第 1 步）" : "逐段讲解",
+                AllIcons.General.Information,
+                SwingConstants.LEFT);
+        heading.setFont(heading.getFont().deriveFont(Font.BOLD));
+        JPanel headingRow = new JPanel(new BorderLayout());
+        headingRow.setOpaque(false);
+        headingRow.add(heading, BorderLayout.WEST);
+        panel.add(headingRow);
+
+        for (int index = 0; index < steps.size(); index++) {
+            GuideStep step = steps.get(index);
+            JPanel item = new JPanel();
+            item.setLayout(new BoxLayout(item, BoxLayout.Y_AXIS));
+            item.setOpaque(false);
+            item.setBorder(JBUI.Borders.emptyTop(8));
+
+            JBLabel number = new JBLabel("第 " + (index + 1) + " 步");
+            number.setFont(number.getFont().deriveFont(Font.BOLD));
+            JPanel numberRow = new JPanel(new BorderLayout(6, 0));
+            numberRow.setOpaque(false);
+            numberRow.add(number, BorderLayout.WEST);
+            if (step.hasCode()) {
+                JButton locate = new JButton("定位");
+                locate.setToolTipText("把编辑器光标移到这段代码上");
+                locate.addActionListener(event -> EditorLocator.reveal(project, step.code()));
+                JPanel locateRow = new JPanel(new FlowLayout(FlowLayout.RIGHT, 0, 0));
+                locateRow.setOpaque(false);
+                locateRow.add(locate);
+                numberRow.add(locateRow, BorderLayout.EAST);
+            }
+            item.add(numberRow);
+            if (step.hasCode()) {
+                item.add(stepCode(step.code()));
+            }
+            item.add(stepText(roadmap ? "" : "做了什么：", step.what()));
+            if (!step.why().isBlank()) {
+                item.add(stepText(roadmap ? "为什么按这个顺序：" : "为什么这样写：", step.why()));
+            }
+            panel.add(item);
+        }
+        return panel;
+    }
+
+    private static JComponent stepCode(String code) {
+        JBTextArea area = new JBTextArea(code);
+        area.setEditable(false);
+        area.setLineWrap(true);
+        area.setWrapStyleWord(false);
+        area.setFocusable(false);
+        area.setFont(new Font(Font.MONOSPACED, Font.PLAIN, area.getFont().getSize()));
+        area.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border()),
+                JBUI.Borders.empty(4, 6)));
+        area.getAccessibleContext().setAccessibleName("被讲解的代码片段");
+        JPanel wrapper = new JPanel(new BorderLayout());
+        wrapper.setOpaque(false);
+        wrapper.setBorder(JBUI.Borders.emptyTop(3));
+        wrapper.add(area, BorderLayout.CENTER);
+        return wrapper;
+    }
+
+    private static JComponent stepText(String label, String value) {
+        JBTextArea text = new JBTextArea(label + value);
+        text.setEditable(false);
+        text.setLineWrap(true);
+        text.setWrapStyleWord(true);
+        text.setOpaque(false);
+        text.setFocusable(false);
+        text.setBorder(JBUI.Borders.emptyTop(3));
+        JPanel wrapper = new JPanel(new BorderLayout());
+        wrapper.setOpaque(false);
+        wrapper.add(text, BorderLayout.CENTER);
+        return wrapper;
     }
 
     private JComponent buildReminderBanner(List<KnowledgeReminder> reminders) {
@@ -611,15 +767,14 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
                 JBUI.Borders.empty(10, 12)));
 
         JBLabel title = new JBLabel(
-                "代码已修改，当前结果可能过期",
+                "目标代码或相关文件已更新",
                 AllIcons.General.Warning,
                 SwingConstants.LEFT);
         title.setFont(title.getFont().deriveFont(Font.BOLD, 13f));
         title.setForeground(COLOR_EXPIRY_TITLE);
 
         JBLabel desc = new JBLabel(
-                "<html>分析过的代码已经变化，旧内容可能对不上当前位置。"
-                        + "<br>点击上方按钮重新获取最新结果。</html>");
+                "<html>点击上方按钮，用当前代码重新获取结果。</html>");
         desc.setForeground(JBColor.GRAY);
         desc.setFont(desc.getFont().deriveFont(11f));
 
@@ -679,9 +834,11 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
      */
     private void triggerCurrentModeAction() {
         ReviewMode mode = currentMode(ReviewSession.getInstance(project));
-        triggerAction(mode == ReviewMode.EXPLAIN
-                ? EXPLAIN_ACTION_ID
-                : REVIEW_ACTION_ID);
+        triggerAction(switch (mode) {
+            case EXPLAIN -> EXPLAIN_ACTION_ID;
+            case NEXT_STEP -> NEXT_STEP_ACTION_ID;
+            case REVIEW -> REVIEW_ACTION_ID;
+        });
     }
 
     private void triggerAction(String actionId) {
@@ -714,6 +871,20 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
 
     private void showMoreMenu() {
         JPopupMenu menu = new JPopupMenu();
+        JMenuItem nextStep = new JMenuItem("下一步怎么写…");
+        nextStep.addActionListener(event -> triggerAction(NEXT_STEP_ACTION_ID));
+        menu.add(nextStep);
+        JMenuItem review = new JMenuItem("评审当前代码");
+        review.addActionListener(event -> triggerAction(REVIEW_ACTION_ID));
+        menu.add(review);
+        JMenuItem explain = new JMenuItem("解释当前代码");
+        explain.addActionListener(event -> triggerAction(EXPLAIN_ACTION_ID));
+        menu.add(explain);
+        JMenuItem ask = new JMenuItem("带着问题问导师…");
+        ask.addActionListener(event -> triggerAction(ASK_ACTION_ID));
+        menu.add(ask);
+        menu.addSeparator();
+        menu.add(knowledgeItem);
         menu.add(previewItem);
         menu.add(summaryItem);
         menu.add(exportItem);
@@ -802,7 +973,8 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
     private void showPrivacyAndData() {
         int choice = Messages.showDialog(
                 project,
-                "发送授权按项目和模型地址保存；学习记录仅保存在本机 IDE 系统目录。",
+                "发送授权按项目和模型地址保存；学习记录仅保存在本机 IDE 系统目录。\n"
+                        + "读取整个项目的授权和已记住的项目画像，在“更多… → 项目画像…”里单独管理。",
                 "CodeMentor 隐私与数据",
                 new String[] {"撤销本项目发送授权", "清除全部本地学习记录", "取消"},
                 2,
@@ -858,11 +1030,13 @@ public class MentorToolWindowPanel extends SimpleToolWindowPanel implements Disp
         switch (s) {
             case IDLE: return "空闲";
             case REQUESTING:
-                return mode == ReviewMode.EXPLAIN ? "导师解释中…" : "导师评审中…";
+                return mode == ReviewMode.NEXT_STEP ? "编码指导中…"
+                        : mode == ReviewMode.EXPLAIN ? "导师解释中…" : "导师评审中…";
             case SUCCESS:
-                return mode == ReviewMode.EXPLAIN ? "解释完成" : "评审完成";
+                return mode == ReviewMode.NEXT_STEP ? "编码指导完成"
+                        : mode == ReviewMode.EXPLAIN ? "解释完成" : "评审完成";
             case FAILED: return "失败";
-            case EXPIRED: return "已过期（代码已修改）";
+            case EXPIRED: return "已过期";
             default: return s.toString();
         }
     }

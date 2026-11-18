@@ -2,6 +2,7 @@ package com.codementor.model;
 
 import com.codementor.learning.KnowledgePointNormalizer;
 import com.codementor.practice.Exercise;
+import com.codementor.review.GuideStep;
 import com.codementor.review.ReviewMode;
 import com.codementor.review.ReviewResult;
 import com.codementor.review.Suggestion;
@@ -40,6 +41,8 @@ public final class JsonResponseParser {
     private static final int MAX_GUIDANCE_CHARS = 2_000;
     private static final int MAX_FOLLOW_UP_CHARS = 8_000;
     private static final int MAX_SUGGESTIONS = 3;
+    /** 逐段讲解 / 整体思路最多保留的步数。 */
+    static final int MAX_GUIDE_STEPS = 8;
     private static final int MAX_SUGGESTION_ITEMS_TO_INSPECT = 20;
     private static final Pattern UNSUPPORTED_EXECUTION_CLAIM = Pattern.compile(
             "(?iu)(?:"
@@ -70,7 +73,10 @@ public final class JsonResponseParser {
      * 合法建议则视为协议错误，避免把坏响应误报成“代码没有问题”。
      */
     public static ReviewResult parseReview(String content) throws ParseException {
-        JsonObject root = parseRootObject(content, "模型返回");
+        return parseReview(parseRootObject(content, "模型返回"));
+    }
+
+    private static ReviewResult parseReview(JsonObject root) throws ParseException {
         String summary = requiredString(root, "summary", MAX_SUMMARY_CHARS);
         rejectUnsupportedExecutionClaim(summary, "summary");
         return new ReviewResult(
@@ -80,7 +86,20 @@ public final class JsonResponseParser {
 
     public static ReviewResult parseReview(String content, ReviewMode mode)
             throws ParseException {
-        ReviewResult result = parseReview(content);
+        JsonObject root = parseRootObject(content, "模型返回");
+        ReviewResult result = parseReview(root).withSteps(parseSteps(root, mode));
+        if (mode == ReviewMode.NEXT_STEP) {
+            if (result.suggestions().size() != 1) {
+                throw new ParseException("编码指导模式需要恰好一个最小编码任务");
+            }
+            if (result.suggestions().get(0).getCertainty() != Suggestion.Certainty.MEDIUM) {
+                throw new ParseException("编码指导模式的 certainty 必须为 MEDIUM");
+            }
+            if (!result.suggestions().get(0).getExample().isBlank()) {
+                throw new ParseException("编码指导模式只提供任务，example 必须为空");
+            }
+            return result;
+        }
         if (mode != ReviewMode.EXPLAIN) return result;
         if (result.suggestions().isEmpty()) {
             throw new ParseException("解释模式至少需要一个理解要点");
@@ -90,6 +109,56 @@ public final class JsonResponseParser {
             throw new ParseException("解释模式的 certainty 必须为 MEDIUM");
         }
         return result;
+    }
+
+    /**
+     * 解析可选的结果级讲解：解释模式读 {@code walkthrough}（逐段讲解），
+     * 下一步指导模式读 {@code roadmap}（整体思路）。
+     *
+     * <p>这是对主结果的增强而不是协议必填项：缺失、类型不对或单步不合格时只丢弃对应内容，
+     * 不让整次请求失败。逐段讲解的代码片段是否真实存在，由证据校验在后面再过滤一次。
+     */
+    private static List<GuideStep> parseSteps(JsonObject root, ReviewMode mode) {
+        if (mode != ReviewMode.EXPLAIN && mode != ReviewMode.NEXT_STEP) return List.of();
+        boolean walkthrough = mode == ReviewMode.EXPLAIN;
+        JsonElement element = root.get(walkthrough ? "walkthrough" : "roadmap");
+        if (element == null || !element.isJsonArray()) return List.of();
+
+        List<GuideStep> steps = new ArrayList<>();
+        int inspected = 0;
+        for (JsonElement item : element.getAsJsonArray()) {
+            if (steps.size() >= MAX_GUIDE_STEPS
+                    || inspected >= MAX_SUGGESTION_ITEMS_TO_INSPECT) {
+                break;
+            }
+            inspected++;
+            if (!item.isJsonObject()) continue;
+            JsonObject object = item.getAsJsonObject();
+            String code = walkthrough ? enrichment(object, "code", MAX_EVIDENCE_CHARS) : "";
+            String what = enrichment(object, walkthrough ? "what" : "step", MAX_GUIDANCE_CHARS);
+            String why = enrichment(object, "why", MAX_GUIDANCE_CHARS);
+            if (what.isBlank() || (walkthrough && code.isBlank())) continue;
+            steps.add(new GuideStep(code, what, why));
+        }
+        return List.copyOf(steps);
+    }
+
+    /**
+     * 读取一个可选的增强字段。与 {@link #optionalString} 不同，任何不合格（类型不对、超长、
+     * 声称执行过代码）都降级为空串：增强字段不应该拖垮必填内容。
+     */
+    private static String enrichment(JsonObject object, String key, int maxChars) {
+        if (object == null || !object.has(key)) return "";
+        JsonElement element = object.get(key);
+        if (!element.isJsonPrimitive() || !element.getAsJsonPrimitive().isString()) return "";
+        String value = element.getAsString().trim();
+        if (value.length() > maxChars) return "";
+        try {
+            rejectUnsupportedExecutionClaim(value, key);
+        } catch (ParseException e) {
+            return "";
+        }
+        return value;
     }
 
     /** Backward-compatible suggestion-only parser used by focused tests and callers. */
@@ -162,6 +231,9 @@ public final class JsonResponseParser {
                         object, "nextStep", MAX_GUIDANCE_CHARS))
                 .selfCheckQuestion(requiredString(
                         object, "selfCheckQuestion", MAX_GUIDANCE_CHARS))
+                .rationale(enrichment(object, "rationale", MAX_GUIDANCE_CHARS))
+                .alternatives(enrichment(object, "alternatives", MAX_GUIDANCE_CHARS))
+                .pitfall(enrichment(object, "pitfall", MAX_GUIDANCE_CHARS))
                 .build();
         rejectUnsupportedExecutionClaim(suggestion.getTitle(), "title");
         rejectUnsupportedExecutionClaim(suggestion.getHint(), "hint");

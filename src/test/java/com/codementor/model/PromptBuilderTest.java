@@ -14,6 +14,23 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class PromptBuilderTest {
 
     @Test
+    void nextStepModeUsesVisibleContextAndOneTaskWithoutInventingRequirements() {
+        String system = PromptBuilder.buildSystemPrompt(ReviewMode.NEXT_STEP);
+        String user = PromptBuilder.buildUserPrompt(
+                "int count() { return 0; }", CodeMentorSettings.TeachingLevel.BEGINNER,
+                JavaWebContext.unknown(), "本次学习目标：完成统计方法", ReviewMode.NEXT_STEP);
+
+        assertTrue(system.contains("suggestions 必须恰好一条"));
+        assertTrue(system.contains("禁止猜测业务需求"));
+        assertTrue(system.contains("不声称已读取整个项目"));
+        assertTrue(system.contains("example 留空"));
+        assertTrue(user.contains("学习请求：指导下一步编码"));
+        assertTrue(user.contains("完成统计方法"));
+        assertTrue(user.contains("只练习一个语法或控制流程"));
+        assertTrue(user.contains("只分析独立的分析目标"));
+    }
+
+    @Test
     void keepsProjectRulesInDelimitedReferenceSection() {
         JavaWebContext webContext = new JavaWebContext(
                 JavaWebRole.CONTROLLER,

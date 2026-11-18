@@ -215,6 +215,7 @@ public final class CodeMentorConfigurable implements Configurable {
 
         CodeMentorSettings settings = CodeMentorSettings.getInstance();
         String previousEndpoint = settings.getApiBaseUrl();
+        String previousExclusions = settings.getExcludedFilePatterns();
         boolean reviewWasEnabled = settings.isReviewEnabled();
         settings.setApiBaseUrl(endpoint.normalizedEndpoint());
         settings.setModel(model);
@@ -230,6 +231,7 @@ public final class CodeMentorConfigurable implements Configurable {
         syncPresetSelection();
         excludedPatternsArea.setText(settings.getExcludedFilePatterns());
         if (!previousEndpoint.equals(settings.getApiBaseUrl())
+                || !previousExclusions.equals(settings.getExcludedFilePatterns())
                 || (reviewWasEnabled && !settings.isReviewEnabled())) {
             cancelOpenProjectRequests();
         }

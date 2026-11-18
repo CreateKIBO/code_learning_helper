@@ -10,6 +10,19 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ModelContextBuilderTest {
 
     @Test
+    void prioritizesSelectionBackgroundOverLargeImportsAndPreservesTarget() {
+        String target = "return count + 1;";
+        ModelContextBuilder.Result result = ModelContextBuilder.build(
+                new ModelContextBuilder.Input("", "import example.Type;\n".repeat(2_000),
+                        "class Counter", List.of(), "选中代码", target, List.of(), List.of(),
+                        "// 所在方法背景\nint count = input.length();"));
+        assertTrue(result.text().contains("int count = input.length();"));
+        assertTrue(result.text().endsWith(target));
+        assertTrue(result.text().length() <= ModelContextBuilder.MAX_CONTEXT_CHARS);
+        assertTrue(result.truncated());
+    }
+
+    @Test
     void includesStructuredMetadataAndTargetCode() {
         ModelContextBuilder.Result result = ModelContextBuilder.build(
                 new ModelContextBuilder.Input(

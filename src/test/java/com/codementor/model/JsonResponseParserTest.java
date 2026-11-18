@@ -20,6 +20,30 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class JsonResponseParserTest {
 
     @Test
+    void nextStepRequiresExactlyOneNeutralTask() throws Exception {
+        JsonArray tasks = new JsonArray();
+        assertThrows(JsonResponseParser.ParseException.class,
+                () -> JsonResponseParser.parseReview(reviewResponse(tasks), ReviewMode.NEXT_STEP));
+        JsonObject task = validSuggestion();
+        task.addProperty("certainty", "MEDIUM");
+        task.addProperty("example", "");
+        tasks.add(task);
+        assertEquals(1, JsonResponseParser.parseReview(
+                reviewResponse(tasks), ReviewMode.NEXT_STEP).suggestions().size());
+        task.addProperty("example", "return completeSolution();");
+        assertThrows(JsonResponseParser.ParseException.class,
+                () -> JsonResponseParser.parseReview(reviewResponse(tasks), ReviewMode.NEXT_STEP));
+        task.addProperty("example", "");
+        task.addProperty("certainty", "HIGH");
+        assertThrows(JsonResponseParser.ParseException.class,
+                () -> JsonResponseParser.parseReview(reviewResponse(tasks), ReviewMode.NEXT_STEP));
+        task.addProperty("certainty", "MEDIUM");
+        tasks.add(task.deepCopy());
+        assertThrows(JsonResponseParser.ParseException.class,
+                () -> JsonResponseParser.parseReview(reviewResponse(tasks), ReviewMode.NEXT_STEP));
+    }
+
+    @Test
     void parsesAtMostThreeSuggestionsAndAssignsStableIds() throws Exception {
         JsonArray suggestions = new JsonArray();
         for (int index = 0; index < 4; index++) {

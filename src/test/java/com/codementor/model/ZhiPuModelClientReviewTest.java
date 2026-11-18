@@ -3,6 +3,10 @@ package com.codementor.model;
 import com.codementor.review.ReviewContext;
 import com.codementor.review.ReviewResult;
 import com.codementor.review.ReviewService;
+import com.codementor.review.ReviewMode;
+import com.codementor.privacy.SendPreviewFormatter;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonObject;
 import com.codementor.settings.CodeMentorSettings;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -22,6 +26,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -85,6 +90,71 @@ class ZhiPuModelClientReviewTest {
         assertEquals(2, attempts.get());
         assertEquals(2, requestBodies.size());
         assertTrue(requestBodies.get(1).contains("完整 JSON"));
+    }
+
+    @Test
+    void nextStepMasksGoalAndRejectsEvidenceOutsideTheSelectionBeforeRetrying() throws Exception {
+        AtomicInteger attempts = new AtomicInteger();
+        List<String> bodies = new CopyOnWriteArrayList<>();
+        String target = "return left + right;";
+        String background = "int add(int left, int right)";
+        ReviewContext context = new ReviewContext("src/Demo.java", "选中代码", target,
+                "// 所在方法背景\n" + background + "\n// 分析目标：选中代码\n" + target,
+                false, 1L, "selection", -1, -1)
+                .withReviewMode(ReviewMode.NEXT_STEP)
+                .withProjectRules("本次学习目标：添加边界校验。apiKey = \"goal-secret-value\"");
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/chat", exchange -> {
+            bodies.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            JsonObject task = new JsonObject();
+            task.addProperty("category", "JAVA_USAGE");
+            task.addProperty("certainty", "MEDIUM");
+            task.addProperty("title", "明确边界输入");
+            task.addProperty("evidence", attempts.incrementAndGet() == 1 ? background : target);
+            task.addProperty("hint", "极值输入会怎样？");
+            task.addProperty("explanation", "先定义边界再动手实现。");
+            task.addProperty("example", "");
+            task.addProperty("knowledgePoint", "整数边界");
+            task.addProperty("verificationCriteria", "列出正常值和极值的预期结果");
+            task.addProperty("nextStep", "先写出两个边界输入的预期结果");
+            task.addProperty("selfCheckQuestion", "相加溢出时你期望怎样处理？");
+            JsonArray tasks = new JsonArray();
+            tasks.add(task);
+            JsonObject response = new JsonObject();
+            response.addProperty("summary", "从当前加法语句出发明确边界");
+            response.add("suggestions", tasks);
+            respond(exchange, successResponse(response.toString()));
+        });
+        server.start();
+        ZhiPuModelClient client = new ZhiPuModelClient(HttpClient.newHttpClient(), () -> "test-key");
+        ModelRequestConfig config = new ModelRequestConfig(
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/chat", "test-model",
+                CodeMentorSettings.TeachingLevel.BEGINNER, ModelRequestConfig.CURRENT_PROMPT_SCHEMA);
+        CountDownLatch done = new CountDownLatch(1);
+        AtomicReference<ReviewResult> result = new AtomicReference<>();
+        AtomicReference<String> failure = new AtomicReference<>();
+        client.review(config, context, "next-step", new ReviewService.Callback() {
+            @Override
+            public void onSuccess(ReviewResult value) {
+                result.set(value);
+                done.countDown();
+            }
+            @Override
+            public void onFailure(String message) {
+                failure.set(message);
+                done.countDown();
+            }
+        });
+        assertTrue(done.await(5, TimeUnit.SECONDS));
+        assertNull(failure.get(), failure.get());
+        assertEquals(2, attempts.get());
+        assertEquals(target, result.get().suggestions().get(0).getEvidence());
+        assertFalse(SendPreviewFormatter.format(context, 32_000).contains("goal-secret-value"));
+        for (String body : bodies) {
+            assertTrue(body.contains("指导下一步编码"));
+            assertTrue(body.contains("添加边界校验"));
+            assertFalse(body.contains("goal-secret-value"));
+        }
     }
 
     private static ReviewContext context() {

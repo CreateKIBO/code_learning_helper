@@ -2,6 +2,9 @@ package com.codementor.ui;
 
 import com.codementor.review.ReviewContext;
 import com.codementor.review.ReviewSession;
+import com.codementor.review.ReviewMode;
+import com.codementor.review.ReviewResult;
+import com.codementor.review.Suggestion;
 import com.intellij.testFramework.EdtTestUtil;
 import com.intellij.testFramework.LightPlatformTestCase;
 import com.intellij.util.ui.AsyncProcessIcon;
@@ -11,8 +14,38 @@ import java.awt.Container;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
+import javax.swing.JButton;
+import com.intellij.ui.components.JBLabel;
 
 public class MentorToolWindowPanelTest extends LightPlatformTestCase {
+
+    public void testNextStepShowsTaskWithoutErrorCertaintyOrModificationVerification() throws Throwable {
+        EdtTestUtil.runInEdtAndWait(() -> {
+            ReviewSession session = ReviewSession.getInstance(getProject());
+            session.reset();
+            MentorToolWindowPanel panel = new MentorToolWindowPanel(getProject());
+            try {
+                assertTrue(descendants(panel, JButton.class).stream()
+                        .anyMatch(button -> "下一步怎么写".equals(button.getText())));
+                session.startRequest(context().withReviewMode(ReviewMode.NEXT_STEP), "next");
+                session.succeed("next", new ReviewResult("先明确输入输出", List.of(
+                        new Suggestion.Builder().id("S1").category(Suggestion.Category.JAVA_USAGE)
+                                .certainty(Suggestion.Certainty.MEDIUM).title("写出输入输出")
+                                .evidence("void run() {}").hint("预期是什么？")
+                                .nextStep("写一行契约注释").verificationCriteria("能说明边界行为")
+                                .selfCheckQuestion("空输入怎么办？").build())));
+                assertTrue(descendants(panel, JBLabel.class).stream()
+                        .anyMatch(label -> label.getText() != null && label.getText().startsWith("编码任务 · ")));
+                assertTrue(descendants(panel, JButton.class).stream()
+                        .anyMatch(button -> "继续编码指导".equals(button.getText())));
+                assertFalse(descendants(panel, JButton.class).stream()
+                        .anyMatch(button -> "我改好了，验证".equals(button.getText())));
+            } finally {
+                panel.dispose();
+                session.reset();
+            }
+        });
+    }
 
     public void testCompactActivityIndicatorFollowsSessionLifecycle() throws Throwable {
         ReviewSession session = ReviewSession.getInstance(getProject());

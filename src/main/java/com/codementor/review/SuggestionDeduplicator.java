@@ -41,6 +41,9 @@ public final class SuggestionDeduplicator {
                 .verificationCriteria(source.getVerificationCriteria())
                 .nextStep(source.getNextStep())
                 .selfCheckQuestion(source.getSelfCheckQuestion())
+                .rationale(source.getRationale())
+                .alternatives(source.getAlternatives())
+                .pitfall(source.getPitfall())
                 .build();
     }
 

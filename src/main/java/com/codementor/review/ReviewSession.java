@@ -48,6 +48,7 @@ public final class ReviewSession {
     private ReviewContext context;          // 本次评审的上下文（含指纹）
     private List<Suggestion> suggestions;   // 评审结果（SUCCESS 时有值）
     private String summary = "";            // 模型对当前可见上下文的整体总结
+    private List<GuideStep> steps = List.of(); // 逐段讲解（解释）或整体思路（下一步指导）
     private String errorMessage;            // FAILED 时的错误信息
     private String requestId;               // 请求 ID，用于日志追踪
     private String learningReviewId;        // 学习事件关联 ID，结果过期后仍保留
@@ -94,6 +95,7 @@ public final class ReviewSession {
         this.status = ReviewStatus.REQUESTING;
         this.suggestions = null;
         this.summary = "";
+        this.steps = List.of();
         this.errorMessage = null;
         clearLearningProgress();
         fireChanged();
@@ -109,8 +111,15 @@ public final class ReviewSession {
         if (!isCurrentRequest(requestId)) return false;
         this.summary = result.summary();
         this.suggestions = result.suggestions();
+        this.steps = result.steps();
         if (learningReviewId != null && !learningReviewId.isBlank()) {
             this.learningReviewId = learningReviewId;
+        }
+        if (context != null && context.getReviewMode() == ReviewMode.EXPLAIN) {
+            // 用户明确要求“解释”，讲解默认展开；评审模式仍保持先提示、后讲解的渐进揭示。
+            for (Suggestion suggestion : result.suggestions()) {
+                expandedExplanations.add(suggestion.getId());
+            }
         }
         this.status = ReviewStatus.SUCCESS;
         this.errorMessage = null;
@@ -130,6 +139,7 @@ public final class ReviewSession {
         this.errorMessage = message;
         this.suggestions = null;
         this.summary = "";
+        this.steps = List.of();
         fireChanged();
     }
 
@@ -139,6 +149,8 @@ public final class ReviewSession {
         if (status == ReviewStatus.REQUESTING || status == ReviewStatus.SUCCESS) {
             this.status = ReviewStatus.EXPIRED;
             this.requestId = null; // 作废请求：随后迟到的成功/失败响应一并丢弃
+            followUpResults.keySet().removeAll(followUpRequestIds.keySet());
+            followUpRequestIds.clear();
             fireChanged();
         }
     }
@@ -149,6 +161,7 @@ public final class ReviewSession {
         this.context = null;
         this.suggestions = null;
         this.summary = "";
+        this.steps = List.of();
         this.errorMessage = null;
         this.requestId = null;
         this.learningReviewId = null;
@@ -354,6 +367,7 @@ public final class ReviewSession {
     public ReviewContext getContext() { return context; }
     public List<Suggestion> getSuggestions() { return suggestions; }
     public String getSummary() { return summary; }
+    public List<GuideStep> getSteps() { return steps; }
     public String getErrorMessage() { return errorMessage; }
     public VerificationResult getVerificationResult(String suggestionId) {
         return verificationResults.getOrDefault(

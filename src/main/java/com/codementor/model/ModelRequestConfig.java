@@ -12,7 +12,7 @@ public record ModelRequestConfig(
         CodeMentorSettings.TeachingLevel teachingLevel,
         String promptSchemaVersion) {
 
-    public static final String CURRENT_PROMPT_SCHEMA = "2026-08-v5";
+    public static final String CURRENT_PROMPT_SCHEMA = "2026-11-v8";
 
     public ModelRequestConfig {
         endpoint = Objects.requireNonNull(endpoint, "endpoint");

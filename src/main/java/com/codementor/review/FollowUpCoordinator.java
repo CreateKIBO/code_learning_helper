@@ -35,7 +35,7 @@ public final class FollowUpCoordinator implements Disposable {
 
         ReviewSession session = ReviewSession.getInstance(project);
         ReviewContext context = session.getContext();
-        if (context == null) return;
+        if (context == null || session.getStatus() == ReviewStatus.EXPIRED) return;
         if (normalizedQuestion.length() > MAX_QUESTION_CHARS) {
             failImmediately(
                     session, suggestion, normalizedQuestion,

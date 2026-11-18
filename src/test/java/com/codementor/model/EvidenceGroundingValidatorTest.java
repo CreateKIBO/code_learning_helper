@@ -13,6 +13,19 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 class EvidenceGroundingValidatorTest {
 
     @Test
+    void selectionBackgroundCannotBeUsedAsTargetEvidence() throws Exception {
+        String selectedCode = "return length + 1;";
+        String sentContext = "// 所在方法背景\nint length = input.length();\n"
+                + "// 分析目标：选中代码\n" + selectedCode;
+        assertThrows(JsonResponseParser.ParseException.class,
+                () -> EvidenceGroundingValidator.requireGrounded(
+                        resultWithEvidence("int length = input.length();"), sentContext, selectedCode));
+        ReviewResult grounded = resultWithEvidence(selectedCode);
+        assertSame(grounded, EvidenceGroundingValidator.requireGrounded(
+                grounded, sentContext, selectedCode));
+    }
+
+    @Test
     void acceptsQuotedSourceExcerptWithEquivalentWhitespace() throws Exception {
         String context = """
                 class Demo {

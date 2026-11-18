@@ -8,6 +8,62 @@ import com.intellij.testFramework.fixtures.LightJavaCodeInsightFixtureTestCase;
 /** 使用真实 Java PSI 验证目标定位和相关字段裁剪。 */
 public class PsiContextExtractorTest extends LightJavaCodeInsightFixtureTestCase {
 
+    public void testSelectionGetsMethodBackgroundButKeepsEvidenceAndVerificationScope() {
+        var file = myFixture.configureByText("Counter.java", """
+                class Counter {
+                    int count(String input) {
+                        int length = input.length();
+                        <selection>return length + 1;</selection>
+                    }
+                    boolean isEmpty(String value) { return value.isEmpty(); }
+                    String unrelated() { return "PRIVATE_BODY_MUST_STAY_OUT"; }
+                }
+                """);
+        ReviewContext context = ApplicationManager.getApplication().runReadAction(
+                (Computable<ReviewContext>) () -> PsiContextExtractor.extract(
+                        getProject(), myFixture.getEditor(), file));
+
+        assertNotNull(context);
+        assertEquals("return length + 1;", context.getCode());
+        assertEquals(-1, context.getMethodStart());
+        assertEquals("", context.getTargetIdentity());
+        assertTrue(context.getModelContext().contains("int count(String input)"));
+        assertTrue(context.getModelContext().contains("int length = input.length();"));
+        assertTrue(context.getModelContext().contains("boolean isEmpty(String value);"));
+        assertFalse(context.getModelContext().contains("PRIVATE_BODY_MUST_STAY_OUT"));
+        assertTrue(context.getModelContext().endsWith(context.getCode()));
+    }
+
+    public void testSelectionAcrossMethodsDoesNotClaimOneEnclosingMethod() {
+        var file = myFixture.configureByText("Example.java", """
+                class Example {
+                    int first() { <selection>return 1; }
+                    int second() { return 2;</selection> }
+                }
+                """);
+        ReviewContext context = ApplicationManager.getApplication().runReadAction(
+                (Computable<ReviewContext>) () -> PsiContextExtractor.extract(
+                        getProject(), myFixture.getEditor(), file));
+        assertNotNull(context);
+        assertFalse(context.getModelContext().contains("// 所在方法背景"));
+        assertEquals(-1, context.getMethodStart());
+    }
+
+    public void testLargeSelectionBackgroundKeepsParametersAndNearestLocalVariables() {
+        var file = myFixture.configureByText("Counter.java",
+                "class Counter { int count(String input) {\n"
+                        + "// unrelated padding\n".repeat(1_000)
+                        + "int length = input.length();\n<selection>return length + 1;</selection>\n} }");
+        ReviewContext context = ApplicationManager.getApplication().runReadAction(
+                (Computable<ReviewContext>) () -> PsiContextExtractor.extract(
+                        getProject(), myFixture.getEditor(), file));
+        assertNotNull(context);
+        assertTrue(context.getModelContext().contains("int count(String input)"));
+        assertTrue(context.getModelContext().contains("int length = input.length();"));
+        assertTrue(context.getModelContext().contains("选区前背景中段已省略"));
+        assertTrue(context.getModelContext().length() <= ModelContextBuilder.MAX_CONTEXT_CHARS);
+    }
+
     public void testIncludesOnlyFieldReferencedByCurrentMethod() {
         var psiFile = myFixture.configureByText(
                 "UserService.java",

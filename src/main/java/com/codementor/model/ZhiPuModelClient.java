@@ -36,6 +36,12 @@ public final class ZhiPuModelClient implements ReviewService {
     private static final Logger LOG = Logger.getInstance(ZhiPuModelClient.class);
     private static final Gson GSON = new Gson();
     private static final int DEFAULT_MAX_TOKENS = 2_400;
+    /**
+     * 评审 / 解释 / 下一步指导的输出上限。解释模式新增了逐段讲解和“为什么这样写”等字段，
+     * 2,400 个 token 容易把 JSON 截断成无法解析的半截，因此单独放宽；其余操作不变。
+     * 取 4,000 而不是 4,096：部分旧模型（如 GLM-4-Plus）的输出上限是 4K，超出会被服务端拒绝。
+     */
+    private static final int REVIEW_MAX_TOKENS = 4_000;
     private static final int DEEPSEEK_STRUCTURED_MAX_TOKENS = 8_192;
     private static final String STRUCTURED_RETRY_INSTRUCTION =
             "上一次响应没有产生可解析的最终答案。请跳过思考过程，"
@@ -147,23 +153,29 @@ public final class ZhiPuModelClient implements ReviewService {
                             context.getJavaWebContext(),
                             payload.projectRules(),
                             context.getReviewMode(),
-                            context.isTruncated());
+                            context.isTruncated(),
+                            payload.projectKnowledge());
+                    String maskedCode = PrivacyFilter.mask(context.getCode());
                     String requestBody = buildRequestBody(
                             config,
                             PromptBuilder.buildSystemPrompt(context.getReviewMode()),
                             userPrompt,
-                            true);
+                            true,
+                            REVIEW_MAX_TOKENS);
                     return sendAndParseWithRetry(
                             config,
                             apiKey,
                             requestBody,
                             requestId,
                             "评审",
-                            content -> EvidenceGroundingValidator.requireGrounded(
-                                    JsonResponseParser.parseReview(
-                                            content, context.getReviewMode()),
+                            content -> EvidenceGroundingValidator.keepGroundedSteps(
+                                    EvidenceGroundingValidator.requireGrounded(
+                                            JsonResponseParser.parseReview(
+                                                    content, context.getReviewMode()),
+                                            payload.modelContext(),
+                                            maskedCode),
                                     payload.modelContext(),
-                                    PrivacyFilter.mask(context.getCode())));
+                                    maskedCode));
                 },
                 callback::onSuccess,
                 callback::onFailure);
@@ -232,7 +244,8 @@ public final class ZhiPuModelClient implements ReviewService {
                             request.getSuggestion(),
                             request.getQuestion(),
                             config.teachingLevel(),
-                            request.getContext().getJavaWebContext()));
+                            request.getContext().getJavaWebContext(),
+                            request.getContext().getProjectKnowledge()));
                     String body = buildRequestBody(
                             config,
                             PromptBuilder.buildFollowUpSystemPrompt(),
@@ -411,6 +424,16 @@ public final class ZhiPuModelClient implements ReviewService {
             String systemPrompt,
             String userPrompt,
             boolean structuredOutput) {
+        return buildRequestBody(
+                config, systemPrompt, userPrompt, structuredOutput, DEFAULT_MAX_TOKENS);
+    }
+
+    static String buildRequestBody(
+            ModelRequestConfig config,
+            String systemPrompt,
+            String userPrompt,
+            boolean structuredOutput,
+            int maxTokens) {
         JsonObject body = new JsonObject();
         boolean officialDeepSeek =
                 ModelEndpointValidator.isOfficialDeepSeekEndpoint(config.endpoint());
@@ -420,7 +443,7 @@ public final class ZhiPuModelClient implements ReviewService {
                 "max_tokens",
                 structuredOutput && officialDeepSeek
                         ? DEEPSEEK_STRUCTURED_MAX_TOKENS
-                        : DEFAULT_MAX_TOKENS);
+                        : maxTokens);
         if (officialDeepSeek) {
             JsonObject thinking = new JsonObject();
             thinking.addProperty("type", "disabled");

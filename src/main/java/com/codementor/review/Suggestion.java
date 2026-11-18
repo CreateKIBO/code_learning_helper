@@ -9,6 +9,10 @@ package com.codementor.review;
  *   <li>{@link #explanation} —— 完整讲解（默认折叠，用户点开才看）。</li>
  *   <li>{@link #example} —— 参考代码（再点一次才显示，强调不是唯一答案）。</li>
  * </ol>
+ *
+ * <p>讲解层还可以带三段可选的“老师式”补充：{@link #rationale}（为什么这样写）、
+ * {@link #alternatives}（换一种写法会怎样）和 {@link #pitfall}（常见误区）。
+ * 模型没有给出时为空串，界面不显示对应小节。
  */
 public final class Suggestion {
 
@@ -40,6 +44,9 @@ public final class Suggestion {
     private final String verificationCriteria; // 修改验证时用于判断问题是否解决
     private final String nextStep; // 学习者先亲手完成的一步，不是整段替写代码
     private final String selfCheckQuestion; // 理解或修改后的主动回忆问题
+    private final String rationale;    // 为什么这样写：作者的意图、约束或项目约定（可选）
+    private final String alternatives; // 换一种写法会怎样：其他可行写法与取舍（可选）
+    private final String pitfall;      // 这里最容易产生的误解或踩的坑（可选）
 
     /**
      * 私有构造器：统一走 {@link Builder}。
@@ -50,7 +57,8 @@ public final class Suggestion {
                        String title, String evidence, String hint,
                        String explanation, String example, String knowledgePoint,
                        String verificationCriteria, String nextStep,
-                       String selfCheckQuestion) {
+                       String selfCheckQuestion, String rationale,
+                       String alternatives, String pitfall) {
         this.id = id;
         this.category = category;
         this.certainty = certainty;
@@ -63,6 +71,9 @@ public final class Suggestion {
         this.verificationCriteria = verificationCriteria;
         this.nextStep = nextStep;
         this.selfCheckQuestion = selfCheckQuestion;
+        this.rationale = rationale;
+        this.alternatives = alternatives;
+        this.pitfall = pitfall;
     }
 
     public String getId() { return id; }
@@ -77,6 +88,9 @@ public final class Suggestion {
     public String getVerificationCriteria() { return verificationCriteria; }
     public String getNextStep() { return nextStep; }
     public String getSelfCheckQuestion() { return selfCheckQuestion; }
+    public String getRationale() { return rationale; }
+    public String getAlternatives() { return alternatives; }
+    public String getPitfall() { return pitfall; }
 
     @Override
     public String toString() {
@@ -106,6 +120,9 @@ public final class Suggestion {
         private String verificationCriteria = "";
         private String nextStep = "";
         private String selfCheckQuestion = "";
+        private String rationale = "";
+        private String alternatives = "";
+        private String pitfall = "";
 
         public Builder id(String id) { this.id = id; return this; }
         public Builder category(Category category) { this.category = category; return this; }
@@ -126,6 +143,19 @@ public final class Suggestion {
             return this;
         }
 
+        public Builder rationale(String rationale) {
+            this.rationale = rationale == null ? "" : rationale;
+            return this;
+        }
+        public Builder alternatives(String alternatives) {
+            this.alternatives = alternatives == null ? "" : alternatives;
+            return this;
+        }
+        public Builder pitfall(String pitfall) {
+            this.pitfall = pitfall == null ? "" : pitfall;
+            return this;
+        }
+
         public Suggestion build() {
             if (category == null) {
                 throw new IllegalStateException("Suggestion 必须有 category");
@@ -138,7 +168,8 @@ public final class Suggestion {
             }
             return new Suggestion(id, category, certainty, title,
                     evidence, hint, explanation, example, knowledgePoint,
-                    verificationCriteria, nextStep, selfCheckQuestion);
+                    verificationCriteria, nextStep, selfCheckQuestion,
+                    rationale, alternatives, pitfall);
         }
     }
 }

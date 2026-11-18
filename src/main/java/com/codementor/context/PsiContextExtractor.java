@@ -105,7 +105,12 @@ public final class PsiContextExtractor {
             int selectionStart = target.selectionStart();
             containingClass = PsiTreeUtil.getParentOfType(
                     psiFile.findElementAt(selectionStart), PsiClass.class, false);
-            referenceScope = containingClass;
+            targetMethod = findMethodAt(psiFile, selectionStart);
+            if (targetMethod != null
+                    && target.selectionEnd() > targetMethod.getTextRange().getEndOffset()) {
+                targetMethod = null; // 跨方法选区不能借用单个方法的参数与职责。
+            }
+            referenceScope = targetMethod != null ? targetMethod : containingClass;
             analysisStart = selectionStart;
             analysisEnd = target.selectionEnd();
             // 选中模式：methodStart/End 保持 -1，过期检测时"任何改动都视为可能过期"
@@ -153,7 +158,9 @@ public final class PsiContextExtractor {
                 targetName,
                 code,
                 diagnostics,
-                technologyTags);
+                technologyTags,
+                supportingContext(containingClass, targetMethod, hasSelection,
+                        analysisStart, analysisEnd));
         JavaWebContext javaWebContext = JavaWebContextAnalyzer.analyze(
                 (PsiJavaFile) psiFile, containingClass, targetMethod);
 
@@ -221,7 +228,8 @@ public final class PsiContextExtractor {
             String targetName,
             String targetCode,
             List<String> diagnostics,
-            List<String> technologyTags) {
+            List<String> technologyTags,
+            String supportingContext) {
         String packageDeclaration = javaFile.getPackageName().isBlank()
                 ? ""
                 : "package " + javaFile.getPackageName() + ";";
@@ -236,7 +244,54 @@ public final class PsiContextExtractor {
                 targetName,
                 targetCode,
                 diagnostics,
-                technologyTags));
+                technologyTags,
+                supportingContext));
+    }
+
+    /** 仅采集当前文件；辅助背景不属于目标，不能用作建议 evidence。 */
+    private static String supportingContext(
+            PsiClass owner, PsiMethod method, boolean selected, int start, int end) {
+        StringBuilder context = new StringBuilder();
+        if (selected && method != null) {
+            String text = method.getText();
+            int base = method.getTextRange().getStartOffset();
+            int prefixEnd = start - base;
+            int suffixStart = end - base;
+            context.append("// 所在方法背景（只作背景，不能作为 evidence；省略处不代表逻辑不存在）：\n");
+            if (prefixEnd <= 2_000) {
+                context.append(text, 0, prefixEnd);
+            } else {
+                context.append(text, 0, 1_000);
+                context.append("\n// ... 选区前背景中段已省略 ...\n");
+                context.append(text, prefixEnd - 1_000, prefixEnd);
+            }
+            context.append("\n// ... 分析目标位于此处，见下方独立目标块 ...\n");
+            context.append(text, suffixStart, Math.min(text.length(), suffixStart + 1_000));
+            if (text.length() - suffixStart > 1_000) {
+                context.append("\n// ... 选区后背景已省略 ...\n");
+            }
+            context.append('\n');
+        }
+        if (owner != null) {
+            context.append("// 同类方法签名摘要（最多 8 个，未读取方法体，不代表整个项目）：\n");
+            int count = 0;
+            for (PsiMethod sibling : owner.getMethods()) {
+                ProgressManager.checkCanceled();
+                if (sibling == method) continue;
+                if (count++ >= 8) {
+                    context.append("// ... 其余方法签名已省略 ...\n");
+                    break;
+                }
+                String signature = sibling.getName() + sibling.getParameterList().getText();
+                if (sibling.getReturnType() != null) {
+                    signature = sibling.getReturnType().getPresentableText() + " " + signature;
+                }
+                context.append(signature, 0, Math.min(signature.length(), 300));
+                if (signature.length() > 300) context.append(" /* 签名已截断 */");
+                context.append(';').append('\n');
+            }
+        }
+        return context.toString();
     }
 
     private static List<String> collectReferencedFields(

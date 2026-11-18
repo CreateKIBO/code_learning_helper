@@ -34,9 +34,17 @@ abstract class AbstractMentorAction extends AnAction implements DumbAware {
             return;
         }
 
+        String learningGoal = requestLearningGoal(project);
+        if (learningGoal == null) return;
+
         ensureToolWindowVisible(project);
         ReviewCoordinator.getInstance(project)
-                .review(editor, psiFile, ReviewCoordinator.Trigger.MANUAL, mode);
+                .review(editor, psiFile, ReviewCoordinator.Trigger.MANUAL, mode, learningGoal);
+    }
+
+    /** null 表示用户取消；空串表示不附加本次学习目标。 */
+    protected String requestLearningGoal(Project project) {
+        return "";
     }
 
     @Override

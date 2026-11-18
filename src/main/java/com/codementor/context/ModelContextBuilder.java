@@ -64,6 +64,7 @@ public final class ModelContextBuilder {
     private static List<String> optionalSections(Input input) {
         List<String> sections = new ArrayList<>();
         addSection(sections, input.packageDeclaration);
+        addSection(sections, input.supportingContext);
         addSection(sections, input.imports);
 
         StringBuilder typeSummary = new StringBuilder();
@@ -114,6 +115,7 @@ public final class ModelContextBuilder {
         private final String targetCode;
         private final List<String> diagnostics;
         private final List<String> technologyTags;
+        private final String supportingContext;
 
         public Input(String packageDeclaration,
                      String imports,
@@ -123,6 +125,19 @@ public final class ModelContextBuilder {
                      String targetCode,
                      List<String> diagnostics,
                      List<String> technologyTags) {
+            this(packageDeclaration, imports, classDeclaration, referencedFields,
+                    targetName, targetCode, diagnostics, technologyTags, "");
+        }
+
+        public Input(String packageDeclaration,
+                     String imports,
+                     String classDeclaration,
+                     List<String> referencedFields,
+                     String targetName,
+                     String targetCode,
+                     List<String> diagnostics,
+                     List<String> technologyTags,
+                     String supportingContext) {
             this.packageDeclaration = safe(packageDeclaration);
             this.imports = safe(imports);
             this.classDeclaration = safe(classDeclaration);
@@ -131,6 +146,7 @@ public final class ModelContextBuilder {
             this.targetCode = safe(targetCode);
             this.diagnostics = List.copyOf(diagnostics);
             this.technologyTags = List.copyOf(technologyTags);
+            this.supportingContext = safe(supportingContext);
         }
 
         private static String safe(String value) {

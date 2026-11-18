@@ -5,6 +5,7 @@ import com.codementor.review.FeedbackType;
 import com.codementor.review.FollowUpCoordinator;
 import com.codementor.review.FollowUpResult;
 import com.codementor.review.ReviewMode;
+import com.codementor.review.ReviewStatus;
 import com.codementor.review.ReviewSession;
 import com.codementor.review.Suggestion;
 import com.codementor.review.VerificationCoordinator;
@@ -71,6 +72,14 @@ final class SuggestionCardPanel extends JBPanel<SuggestionCardPanel> {
         content.add(buildTitle());
         content.add(textSection("代码依据", suggestion.getEvidence(), null));
         content.add(textSection("先想一想", suggestion.getHint(), JBColor.GRAY));
+        // 解释模式先讲清楚，再给阅读路径；评审和编码指导先给要做的事，讲解按需展开。
+        if (currentMode() != ReviewMode.EXPLAIN) {
+            addPracticeSections(content);
+        }
+        return content;
+    }
+
+    private void addPracticeSections(JPanel content) {
         if (!suggestion.getNextStep().isBlank()) {
             content.add(textSection(
                     currentMode() == ReviewMode.EXPLAIN ? "理解路径" : "先做这一步",
@@ -83,11 +92,12 @@ final class SuggestionCardPanel extends JBPanel<SuggestionCardPanel> {
                     suggestion.getVerificationCriteria(),
                     null));
         }
-        return content;
     }
 
     private JBLabel buildTitle() {
-        String prefix = currentMode() == ReviewMode.EXPLAIN
+        String prefix = currentMode() == ReviewMode.NEXT_STEP
+                ? "编码任务 · " + suggestion.getCategory().getLabel()
+                : currentMode() == ReviewMode.EXPLAIN
                 ? "理解要点 · " + suggestion.getCategory().getLabel()
                 : suggestion.getCategory().getLabel() + " · "
                         + certaintyLabel(suggestion.getCertainty());
@@ -102,16 +112,24 @@ final class SuggestionCardPanel extends JBPanel<SuggestionCardPanel> {
 
     private JComponent buildProgressiveDetails() {
         ReviewSession session = session();
+        ReviewMode mode = currentMode();
+        boolean expanded = session.isExplanationExpanded(suggestion.getId());
         JPanel details = verticalPanel();
-        if (session.isExplanationExpanded(suggestion.getId())) {
-            details.add(textSection("为什么", suggestion.getExplanation(), null));
+        if (expanded) {
+            details.add(textSection(explanationTitle(mode), suggestion.getExplanation(), null));
+            addOptionalSection(details, rationaleTitle(mode), suggestion.getRationale());
+            addOptionalSection(details, "换一种写法会怎样", suggestion.getAlternatives());
+            addOptionalSection(details, "常见误区", suggestion.getPitfall());
             details.add(textSection("知识点", suggestion.getKnowledgePoint(), JBColor.GRAY));
-            if (!suggestion.getSelfCheckQuestion().isBlank()) {
-                details.add(textSection(
-                        "自测一下（先在心里回答）",
-                        suggestion.getSelfCheckQuestion(),
-                        null));
-            }
+        }
+        if (mode == ReviewMode.EXPLAIN) {
+            addPracticeSections(details);
+        }
+        if (expanded && !suggestion.getSelfCheckQuestion().isBlank()) {
+            details.add(textSection(
+                    "自测一下（先在心里回答）",
+                    suggestion.getSelfCheckQuestion(),
+                    null));
         }
         if (session.isExampleExpanded(suggestion.getId())
                 && !suggestion.getExample().isBlank()) {
@@ -119,6 +137,24 @@ final class SuggestionCardPanel extends JBPanel<SuggestionCardPanel> {
             details.add(codeBlock(suggestion.getExample()));
         }
         return details;
+    }
+
+    private static String explanationTitle(ReviewMode mode) {
+        return switch (mode) {
+            case EXPLAIN -> "它在做什么";
+            case NEXT_STEP -> "为什么先做这一步";
+            case REVIEW -> "为什么";
+        };
+    }
+
+    private static String rationaleTitle(ReviewMode mode) {
+        return mode == ReviewMode.NEXT_STEP ? "为什么按项目的写法来写" : "为什么这样写";
+    }
+
+    private static void addOptionalSection(JPanel target, String title, String text) {
+        if (text != null && !text.isBlank()) {
+            target.add(textSection(title, text, null));
+        }
     }
 
     private JComponent buildFooter() {
@@ -136,10 +172,19 @@ final class SuggestionCardPanel extends JBPanel<SuggestionCardPanel> {
 
         boolean explanationExpanded = session.isExplanationExpanded(suggestion.getId());
         JButton whyButton = new JButton(
-                explanationExpanded ? "收起讲解" : "理解原因");
+                explanationExpanded ? "收起讲解"
+                        : currentMode() == ReviewMode.EXPLAIN ? "展开讲解" : "理解原因");
         whyButton.setToolTipText("先自己思考，再按需查看完整讲解");
         whyButton.addActionListener(event -> toggleExplanation());
         learningActions.add(whyButton);
+
+        if (!suggestion.getEvidence().isBlank()) {
+            JButton locateButton = new JButton("定位代码");
+            locateButton.setToolTipText("把编辑器光标移到这条依据对应的代码上");
+            locateButton.addActionListener(event ->
+                    EditorLocator.reveal(project, suggestion.getEvidence()));
+            learningActions.add(locateButton);
+        }
 
         if (explanationExpanded && !suggestion.getExample().isBlank()) {
             JButton exampleButton = new JButton(
@@ -156,6 +201,7 @@ final class SuggestionCardPanel extends JBPanel<SuggestionCardPanel> {
         }
 
         JButton followUpButton = new JButton("继续追问…");
+        followUpButton.setEnabled(session.getStatus() != ReviewStatus.EXPIRED);
         FollowUpResult followUp = session.getFollowUpResult(suggestion.getId());
         if (followUp.getStatus() == FollowUpResult.Status.REQUESTING) {
             followUpButton.setText("取消追问");
